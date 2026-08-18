@@ -43,4 +43,46 @@ function processName(name: string) {
     const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
     assert.equal(findings.length, 0);
   });
-});
+
+    test("does not flag guarded array index access with offset (indexOf + bounds check)", () => {
+      const code = `
+  const ITEMS: (string | undefined)[] = ["a", "b", "c", "d", "e"];
+  function getNext(value: string) {
+    const index = ITEMS.indexOf(value);
+    if (index === -1 || index >= ITEMS.length - 1) {
+      return null;
+    }
+    const next = ITEMS[index + 1]!;
+    return next;
+  }
+      `.trim();
+  
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+  
+    test("flags unguarded array index access near-miss", () => {
+      const code = `
+  const ITEMS: (string | undefined)[] = ["a", "b", "c", "d", "e"];
+  function getNext(value: string) {
+    const index = ITEMS.indexOf(value);
+    const next = ITEMS[index + 1]!;
+    return next;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+  
+    test("does not flag direct null guard before non-null assertion", () => {
+      const code = `
+  function printLength(value: string | null) {
+    if (!value) return;
+    console.log(value!.length);
+  }
+      `.trim();
+  
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+  });

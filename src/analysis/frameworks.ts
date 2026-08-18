@@ -1,0 +1,223 @@
+import type * as tsType from "typescript";
+import { unwrapExpression, resolveConstantValue } from "./values.js";
+
+export interface FrameworkHandlingResult {
+  readonly isHandled: boolean;
+  readonly reason?: string | undefined;
+}
+
+/**
+ * Checks if a property access or call argument contains `{ throwOnError: true }`.
+ */
+function hasThrowOnErrorOption(
+  args: readonly tsType.Expression[],
+  ts: typeof tsType,
+  checker: tsType.TypeChecker
+): boolean {
+  for (const arg of args) {
+    const unwrapped = unwrapExpression(arg, ts);
+    if (ts.isObjectLiteralExpression(unwrapped)) {
+      for (const prop of unwrapped.properties) {
+        if (ts.isPropertyAssignment(prop)) {
+          const propName = prop.name.getText();
+          if (propName === "throwOnError") {
+            const val = resolveConstantValue(prop.initializer, ts, checker);
+            if (val.isStatic && val.kind === "boolean" && val.value === true) {
+              return true;
+            }
+            if (prop.initializer.kind === ts.SyntaxKind.TrueKeyword) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Checks if an argument expression represents a callable function or callback.
+ */
+function isCallableArgument(
+  arg: tsType.Expression,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): boolean {
+  const unwrapped = unwrapExpression(arg, ts);
+  if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
+    return true;
+  }
+  if (checker) {
+    try {
+      const type = checker.getTypeAtLocation(unwrapped);
+      if (type.getCallSignatures().length > 0) {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+
+/**
+ * Evaluates whether a CallExpression represents a verified, handled framework API call.
+ */
+export function evaluateFrameworkPromiseCall(
+  callExpr: tsType.CallExpression,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): FrameworkHandlingResult {
+  if (!checker) return { isHandled: false };
+
+  const callee = unwrapExpression(callExpr.expression, ts);
+  let targetIdentifier: tsType.Node | undefined;
+  let methodName = "";
+
+  if (ts.isPropertyAccessExpression(callee)) {
+    targetIdentifier = callee.name;
+    methodName = callee.name.text;
+  } else if (ts.isIdentifier(callee)) {
+    targetIdentifier = callee;
+    methodName = callee.text;
+  }
+
+  if (!targetIdentifier) return { isHandled: false };
+
+  const symbol = checker.getSymbolAtLocation(targetIdentifier);
+  if (!symbol) return { isHandled: false };
+
+  let targetSymbol: tsType.Symbol | undefined = symbol;
+  if (targetSymbol.flags & ts.SymbolFlags.Alias) {
+    try {
+      targetSymbol = checker.getAliasedSymbol(targetSymbol);
+    } catch {
+      // ignore
+    }
+  }
+
+  const declarations = [...(targetSymbol?.getDeclarations() ?? [])];
+
+  // Also collect declarations from the type of the callee/target (e.g. NavigateFunction)
+  try {
+    const typeAtLoc = checker.getTypeAtLocation(targetIdentifier);
+    const typeSymbol = typeAtLoc.getSymbol() ?? typeAtLoc.aliasSymbol;
+    if (typeSymbol) {
+      let resolvedTypeSymbol: tsType.Symbol | undefined = typeSymbol;
+      if (resolvedTypeSymbol.flags & ts.SymbolFlags.Alias) {
+        try {
+          resolvedTypeSymbol = checker.getAliasedSymbol(resolvedTypeSymbol);
+        } catch {
+          // ignore
+        }
+      }
+      if (resolvedTypeSymbol?.name === "NavigateFunction") {
+        return {
+          isHandled: true,
+          reason: "React Router NavigateFunction optional navigation contract.",
+        };
+      }
+      const typeDecls = resolvedTypeSymbol?.getDeclarations();
+      if (typeDecls) {
+        declarations.push(...typeDecls);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  if (declarations.length === 0) return { isHandled: false };
+
+  for (const decl of declarations) {
+    const fileName = decl.getSourceFile().fileName.replace(/\\/g, "/");
+
+    // 1. TanStack Query / React Query: invalidateQueries, resetQueries, cancelQueries, removeQueries, refetchQueries
+    if (
+      fileName.includes("@tanstack/query-core") ||
+      fileName.includes("@tanstack/react-query") ||
+      fileName.includes("react-query/")
+    ) {
+      if (
+        methodName === "invalidateQueries" ||
+        methodName === "resetQueries" ||
+        methodName === "cancelQueries" ||
+        methodName === "removeQueries" ||
+        methodName === "refetchQueries" ||
+        methodName === "setQueryData"
+      ) {
+        // If throwOnError: true is explicitly specified, the returned Promise will reject on query failure!
+        if (hasThrowOnErrorOption(callExpr.arguments, ts, checker)) {
+          return {
+            isHandled: false,
+            reason: "QueryClient method configured with throwOnError: true may reject unhandled.",
+          };
+        }
+
+        return {
+          isHandled: true,
+          reason: "TanStack Query default query management handles failures internally without unhandled rejection.",
+        };
+      }
+    }
+
+    // 2. i18next: i18n.init(...)
+    const isI18next =
+      fileName.includes("i18next/") ||
+      fileName.includes("i18next") ||
+      (decl.parent &&
+        (ts.isInterfaceDeclaration(decl.parent) || ts.isTypeAliasDeclaration(decl.parent)) &&
+        /^(i18n|i18next|I18n|I18nInstance)$/i.test(decl.parent.name.text));
+
+    if (isI18next) {
+      if (methodName === "init") {
+        // i18next init has two callback signatures:
+        // 1. i18n.init(callback) -> 1 argument where arg[0] is callable
+        // 2. i18n.init(options, callback) -> 2 arguments where arg[1] is callable
+        const args = callExpr.arguments;
+        const hasCallback =
+          (args.length === 1 && args[0] !== undefined && isCallableArgument(args[0], ts, checker)) ||
+          (args.length >= 2 && args[1] !== undefined && isCallableArgument(args[1], ts, checker));
+
+        if (hasCallback) {
+          return {
+            isHandled: true,
+            reason: "i18next init called with error/completion callback handler.",
+          };
+        }
+        // Bare i18n.init(options) returns a Promise that can reject on init failure; must not be blanket-suppressed
+        return { isHandled: false };
+      }
+    }
+
+    // 3. React Hook Form: UseFormRegisterReturn.onChange / onBlur or ChangeHandler
+    if (fileName.includes("react-hook-form/")) {
+      if (
+        methodName === "onChange" ||
+        methodName === "onBlur" ||
+        targetSymbol.name === "ChangeHandler"
+      ) {
+        return {
+          isHandled: true,
+          reason: "React Hook Form synthetic change handler handles internal async validation safely.",
+        };
+      }
+    }
+
+    // 4. React Router / Remix: NavigateFunction
+    if (
+      fileName.includes("react-router/") ||
+      fileName.includes("react-router-dom/") ||
+      fileName.includes("@remix-run/router/")
+    ) {
+      if (methodName === "navigate" || targetSymbol.name === "NavigateFunction") {
+        return {
+          isHandled: true,
+          reason: "React Router NavigateFunction optional navigation contract.",
+        };
+      }
+    }
+  }
+
+  return { isHandled: false };
+}

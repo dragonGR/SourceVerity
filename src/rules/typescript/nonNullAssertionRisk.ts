@@ -1,5 +1,6 @@
 import type * as tsType from "typescript";
 import { getNodeSourceRange } from "../../engine/symbols.js";
+import { isGuardedNonNullAssertion } from "../../analysis/controlFlow.js";
 import type { Rule, RuleContext } from "../../core/types.js";
 
 /**
@@ -31,6 +32,12 @@ export const nonNullAssertionRiskRule: Rule = {
 
     context.visitNodes((node: tsType.Node) => {
       if (!ts.isNonNullExpression(node)) return;
+
+      // 1. Conservative control-flow & bounds check
+      const guardCheck = isGuardedNonNullAssertion(node, ts, checker);
+      if (guardCheck.isGuarded) {
+        return;
+      }
 
       try {
         const innerType = checker.getTypeAtLocation(node.expression);
