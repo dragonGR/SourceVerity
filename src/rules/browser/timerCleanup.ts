@@ -119,11 +119,15 @@ export const timerCleanupRule: Rule = {
             range,
             evidence: [
               {
-                message: `Active ${timer.timerKind} timers that outlive the component lifecycle cause state leaks and background CPU consumption.`,
+                message: isInterval
+                  ? "An uncleared interval continues executing after the owning component has unmounted, retaining its callback and performing unnecessary background work."
+                  : "A pending timeout may fire after the component has unmounted and execute stale lifecycle work.",
                 range,
               },
             ],
-            suggestedAction: `Clear the timer in the returned cleanup function: return () => ${isInterval ? "clearInterval" : "clearTimeout"}(id);`,
+            suggestedAction: isInterval
+              ? `Clear the interval in the returned cleanup function: return () => clearInterval(${timer.varName ?? "id"});`
+              : "Store the timeout handle and clear it in the effect cleanup when post-unmount execution is not intended.",
             safeAutomaticFix: false,
           });
         }
