@@ -32,3 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zero-dependency CLI argument parser with deterministic exit codes.
 - Programmatic TypeScript API (`scanRepository`, `evaluateStrictness`, `createBaseline`, `compareWithBaseline`).
 - Node.js >= 20.12.0 runtime support.
+
+## [1.0.1] - 2026-08-19
+
+### Changed
+- Refined `browser/timer-cleanup` diagnostics to distinguish one-shot `setTimeout` lifecycle risk from repeating `setInterval` behavior.
+- Removed unsupported claims about state leaks, memory leaks, and CPU consumption from timer evidence.
+- Expanded timer cleanup regression coverage for mismatched cleanup functions and `useLayoutEffect`.
+
