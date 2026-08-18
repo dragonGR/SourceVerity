@@ -6,6 +6,11 @@ import {
   evaluatePromiseConsumption,
   isVariableTargetReturnedInScope,
 } from "../../analysis/promiseFlow.js";
+import {
+  getFunctionSummary,
+  resolveLocalOrProjectFunctionDeclaration,
+} from "../../analysis/functions.js";
+import { evaluateFrameworkPromiseCall } from "../../analysis/frameworks.js";
 import type { Rule, RuleContext } from "../../core/types.js";
 
 function canSyntacticallyBePromise(expr: tsType.Expression, ts: typeof tsType): boolean {
@@ -120,7 +125,7 @@ export const floatingPromiseRule: Rule = {
               category: "async",
               severity: "warning",
               confidence: "medium",
-              message: "Expression returns an optional Promise (void | Promise<void>) that may be floating and unhandled.",
+              message: "Expression returns an optional Promise (void | Promise<void>) that is not explicitly consumed.",
               file: sourceFile.fileName,
               range,
               evidence: [
@@ -130,7 +135,7 @@ export const floatingPromiseRule: Rule = {
                 },
               ],
               suggestedAction:
-                "Await the call, handle potential rejections, or prefix with `void` if fire-and-forget is intended.",
+                "Use `void` to make intentional discard explicit, or handle the returned Promise if completion matters.",
               safeAutomaticFix: false,
             });
             return;
@@ -138,12 +143,190 @@ export const floatingPromiseRule: Rule = {
 
           // Definite Promise return types (Promise<T>) in expression statements without handling
           if (classification.isDefinitePromise) {
+            // Pattern 1: Discarded `.finally(...)` or unhandled `.then(...)` in expression statement
+            if (ts.isCallExpression(unwrapped) && ts.isPropertyAccessExpression(unwrapped.expression)) {
+              const methodName = unwrapped.expression.name.text;
+              if (methodName === "finally") {
+                const receiver = unwrapped.expression.expression;
+                let isReceiverHandledLocally = false;
+                if (receiver && ts.isCallExpression(unwrapExpression(receiver, ts))) {
+                  const callNode = unwrapExpression(receiver, ts) as tsType.CallExpression;
+                  const localDecl = resolveLocalOrProjectFunctionDeclaration(callNode, ts, checker);
+                  if (localDecl) {
+                    const summary = getFunctionSummary(localDecl, ts, checker);
+                    if (summary.promiseBehavior === "handles-known-rejections") {
+                      isReceiverHandledLocally = true;
+                    }
+                  }
+                }
+
+                if (isReceiverHandledLocally) {
+                  context.report({
+                    ruleId: "async/floating-promise",
+                    category: "async",
+                    severity: "warning",
+                    confidence: "medium",
+                    message: "Promise returned by this call is not explicitly consumed.",
+                    file: sourceFile.fileName,
+                    range,
+                    evidence: [
+                      {
+                        message: "The called function handles known failures internally, but SourceVerity cannot prove the returned Promise is non-rejecting.",
+                        range,
+                      },
+                    ],
+                    suggestedAction:
+                      "Use `void` to make intentional discard explicit, or handle the returned Promise if completion matters.",
+                    safeAutomaticFix: false,
+                  });
+                  return;
+                }
+
+                context.report({
+                  ruleId: "async/floating-promise",
+                  category: "async",
+                  severity: "error",
+                  confidence: "high",
+                  message: "Promise is discarded and its rejection can escape unhandled.",
+                  file: sourceFile.fileName,
+                  range,
+                  evidence: [
+                    {
+                      message: "The Promise returned by '.finally()' is discarded and will propagate unhandled rejections if the underlying operation fails.",
+                      range,
+                    },
+                  ],
+                  suggestedAction: "Await, return, or attach rejection handling.",
+                  safeAutomaticFix: false,
+                });
+                return;
+              }
+              if (methodName === "then" && unwrapped.arguments.length < 2) {
+                context.report({
+                  ruleId: "async/floating-promise",
+                  category: "async",
+                  severity: "error",
+                  confidence: "high",
+                  message: "Promise is discarded and its rejection can escape unhandled.",
+                  file: sourceFile.fileName,
+                  range,
+                  evidence: [
+                    {
+                      message: "The Promise returned by '.then()' is not chained with a rejection handler and is discarded in statement position.",
+                      range,
+                    },
+                  ],
+                  suggestedAction: "Await, return, or attach rejection handling.",
+                  safeAutomaticFix: false,
+                });
+                return;
+              }
+            }
+
+            // Pattern 2: Known rejecting framework / library API
+            if (ts.isCallExpression(unwrapped)) {
+              const frameworkCheck = evaluateFrameworkPromiseCall(unwrapped, ts, checker);
+              if (frameworkCheck.isKnownRejecting) {
+                context.report({
+                  ruleId: "async/floating-promise",
+                  category: "async",
+                  severity: "error",
+                  confidence: "high",
+                  message: "Promise is discarded and its rejection can escape unhandled.",
+                  file: sourceFile.fileName,
+                  range,
+                  evidence: [
+                    {
+                      message: frameworkCheck.reason ?? "The operation initiates an asynchronous process that may reject unhandled on failure.",
+                      range,
+                    },
+                  ],
+                  suggestedAction: "Await, return, or attach rejection handling.",
+                  safeAutomaticFix: false,
+                });
+                return;
+              }
+
+              // Pattern 3: Resolved local / project function declaration
+              const localDecl = resolveLocalOrProjectFunctionDeclaration(unwrapped, ts, checker);
+              if (localDecl) {
+                const summary = getFunctionSummary(localDecl, ts, checker);
+
+                if (summary.promiseBehavior === "propagates") {
+                  // Class B: Local function with proven rejection propagation
+                  context.report({
+                    ruleId: "async/floating-promise",
+                    category: "async",
+                    severity: "error",
+                    confidence: "high",
+                    message: "Promise is discarded and its rejection can escape unhandled.",
+                    file: sourceFile.fileName,
+                    range,
+                    evidence: [
+                      {
+                        message: "The called function propagates unhandled rejections from its asynchronous operations.",
+                        range,
+                      },
+                    ],
+                    suggestedAction: "Await, return, or attach rejection handling.",
+                    safeAutomaticFix: false,
+                  });
+                  return;
+                }
+
+                if (summary.promiseBehavior === "handles-known-rejections") {
+                  // Class C: Floating Promise with substantial internal error handling
+                  context.report({
+                    ruleId: "async/floating-promise",
+                    category: "async",
+                    severity: "warning",
+                    confidence: "medium",
+                    message: "Promise returned by this call is not explicitly consumed.",
+                    file: sourceFile.fileName,
+                    range,
+                    evidence: [
+                      {
+                        message: "The called function handles known failures internally, but SourceVerity cannot prove the returned Promise is non-rejecting.",
+                        range,
+                      },
+                    ],
+                    suggestedAction:
+                      "Use `void` to make intentional discard explicit, or handle the returned Promise if completion matters.",
+                    safeAutomaticFix: false,
+                  });
+                  return;
+                }
+              }
+
+              // Class D: Unresolved / external / hook / imported function call
+              context.report({
+                ruleId: "async/floating-promise",
+                category: "async",
+                severity: "warning",
+                confidence: "medium",
+                message: "Promise returned by this call is not explicitly consumed.",
+                file: sourceFile.fileName,
+                range,
+                evidence: [
+                  {
+                    message: "The function implementation is unavailable, so rejection behavior cannot be proven.",
+                    range,
+                  },
+                ],
+                suggestedAction:
+                  "Use `void` to make intentional discard explicit, or handle the returned Promise if completion matters.",
+                safeAutomaticFix: false,
+              });
+              return;
+            }
+
+            // Fallback for other unhandled definite Promise expressions
             context.report({
               ruleId: "async/floating-promise",
               category: "async",
               severity: "error",
               confidence: "high",
-              message: "Promise returned in expression statement is floating and unhandled.",
+              message: "Promise is discarded and its rejection can escape unhandled.",
               file: sourceFile.fileName,
               range,
               evidence: [
@@ -152,8 +335,7 @@ export const floatingPromiseRule: Rule = {
                   range,
                 },
               ],
-              suggestedAction:
-                "Await the promise, prefix with `void` for intentional fire-and-forget, or chain a terminal `.catch()` handler.",
+              suggestedAction: "Await, return, or attach rejection handling.",
               safeAutomaticFix: false,
             });
           }

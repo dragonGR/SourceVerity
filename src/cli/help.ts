@@ -24,7 +24,7 @@ COMMANDS:
 
 OPTIONS:
   -f, --format <type>   Output format: pretty (default), json, agent, sarif
-  --min-confidence <lvl> Minimum finding confidence to report: high (default), medium, low
+  --min-confidence <lvl> Minimum finding confidence to report: medium (default), high, low
   --fail-on <severity>  Exit with status 1 on: error (default), warning, never
   -b, --baseline <path> Path to baseline file (default: .sourceverity-baseline.json)
   -u, --update-baseline Update baseline file with current findings

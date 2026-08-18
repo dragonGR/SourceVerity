@@ -114,9 +114,9 @@ export function performWork() {
 }
     `.trim(),
     expectedFindingCount: 1,
-    expectedSeverity: "error",
-    expectedConfidence: "high",
-    rationale: "Un-awaited, un-returned Promise in expression statement can cause unhandled rejections.",
+    expectedSeverity: "warning",
+    expectedConfidence: "medium",
+    rationale: "Uninspected external Promise-returning function called without explicit consumption is reported as calibrated warning/medium confidence.",
   },
 
   // ── CASE GROUP E: Promise .finally() Discard vs Return ───────────────────────
@@ -187,7 +187,7 @@ export function autoResume(address: string) {
 
   // ── CASE GROUP G: Internal Async Error Handling ──────────────────────────────
   {
-    name: "Case G (Safe): Local async function with complete try/catch called in useEffect",
+    name: "Case G (Calibrated): Local async function with complete try/catch called in useEffect",
     ruleId: "async/floating-promise",
     code: `
 import { useEffect } from 'react';
@@ -209,8 +209,10 @@ function StatusMonitor() {
   return null;
 }
     `.trim(),
-    expectedFindingCount: 0,
-    rationale: "checkStatus catches all errors internally without re-throwing, so the returned Promise cannot reject.",
+    expectedFindingCount: 1,
+    expectedSeverity: "warning",
+    expectedConfidence: "medium",
+    rationale: "checkStatus handles errors internally but returns an unconsumed floating Promise, reported with calibrated warning/medium confidence.",
   },
   {
     name: "Case G (Near-Miss Unsafe): Async function with try/finally (NO CATCH) called in useEffect",

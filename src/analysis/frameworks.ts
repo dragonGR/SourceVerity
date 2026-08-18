@@ -3,6 +3,7 @@ import { unwrapExpression, resolveConstantValue } from "./values.js";
 
 export interface FrameworkHandlingResult {
   readonly isHandled: boolean;
+  readonly isKnownRejecting?: boolean | undefined;
   readonly reason?: string | undefined;
 }
 
@@ -186,7 +187,11 @@ export function evaluateFrameworkPromiseCall(
           };
         }
         // Bare i18n.init(options) returns a Promise that can reject on init failure; must not be blanket-suppressed
-        return { isHandled: false };
+        return {
+          isHandled: false,
+          isKnownRejecting: true,
+          reason: "i18next 'init' returns a Promise that rejects on initialization failure, which will escape unhandled if not caught.",
+        };
       }
     }
 

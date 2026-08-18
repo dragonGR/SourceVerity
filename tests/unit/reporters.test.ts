@@ -99,4 +99,104 @@ describe("reporters and output formatters", () => {
     assert.equal(parsed.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri, "src/api/user.ts");
     assert.equal(parsed.runs[0].results[0].locations[0].physicalLocation.region.startLine, 41);
   });
+
+  test("reporters accurately format dynamically calibrated severities and confidence levels", () => {
+    const calibratedResult: AuditResult = {
+      findings: [
+        {
+          fingerprint: "sv_1111111111111111",
+          ruleId: "async/floating-promise",
+          category: "async",
+          severity: "error",
+          confidence: "high",
+          message: "Promise is discarded and its rejection can escape unhandled.",
+          file: "src/api/auth.ts",
+          range: { start: { line: 10, column: 1 }, end: { line: 10, column: 20 } },
+          evidence: [{ message: "The called function propagates unhandled rejections." }],
+          suggestedAction: "Await, return, or attach rejection handling.",
+          safeAutomaticFix: false,
+        },
+        {
+          fingerprint: "sv_2222222222222222",
+          ruleId: "async/floating-promise",
+          category: "async",
+          severity: "warning",
+          confidence: "medium",
+          message: "Promise returned by this call is not explicitly consumed.",
+          file: "src/api/sync.ts",
+          range: { start: { line: 20, column: 1 }, end: { line: 20, column: 20 } },
+          evidence: [{ message: "The called function handles known failures internally." }],
+          suggestedAction: "Use `void` to make intentional discard explicit.",
+          safeAutomaticFix: false,
+        },
+        {
+          fingerprint: "sv_3333333333333333",
+          ruleId: "react/derived-state-effect",
+          category: "react",
+          severity: "warning",
+          confidence: "high",
+          message: "State setter is called unconditionally inside useEffect.",
+          file: "src/components/View.tsx",
+          range: { start: { line: 30, column: 1 }, end: { line: 32, column: 5 } },
+          evidence: [{ message: "Synchronizing derived state in useEffect causes extra render." }],
+          suggestedAction: "Compute the derived value directly during render.",
+          safeAutomaticFix: false,
+        },
+      ],
+      summary: {
+        errors: 1,
+        warnings: 2,
+        info: 0,
+        highConfidence: 2,
+        mediumConfidence: 1,
+        lowConfidence: 0,
+        filesAnalyzed: 3,
+        projectsCount: 1,
+      },
+      repository: {
+        typescriptVersion: "5.9.3",
+        packageManager: "npm",
+        projectCount: 1,
+      },
+    };
+
+    // 1. Terminal report
+    const terminalText = renderTerminalReport(calibratedResult, { color: false });
+    assert.ok(terminalText.includes("1 error"));
+    assert.ok(terminalText.includes("1 warning"));
+    assert.ok(terminalText.includes("warning · medium confidence"));
+    assert.ok(terminalText.includes("warning · high confidence"));
+    assert.ok(terminalText.includes("2 high-confidence findings"));
+    assert.ok(terminalText.includes("1 advisory findings"));
+
+    // 2. JSON report
+    const json = JSON.parse(renderJsonReport(calibratedResult));
+    assert.equal(json.summary.errors, 1);
+    assert.equal(json.summary.warnings, 2);
+    assert.equal(json.summary.highConfidence, 2);
+    assert.equal(json.summary.mediumConfidence, 1);
+    assert.equal(json.findings[0].severity, "error");
+    assert.equal(json.findings[0].confidence, "high");
+    assert.equal(json.findings[1].severity, "warning");
+    assert.equal(json.findings[1].confidence, "medium");
+    assert.equal(json.findings[2].severity, "warning");
+    assert.equal(json.findings[2].confidence, "high");
+
+    // 3. Agent report
+    const agent = JSON.parse(renderAgentReport(calibratedResult));
+    assert.equal(agent.summary.errors, 1);
+    assert.equal(agent.summary.warnings, 2);
+    assert.equal(agent.findings[0].severity, "error");
+    assert.equal(agent.findings[0].confidence, "high");
+    assert.equal(agent.findings[1].severity, "warning");
+    assert.equal(agent.findings[1].confidence, "medium");
+    assert.equal(agent.findings[2].severity, "warning");
+    assert.equal(agent.findings[2].confidence, "high");
+
+    // 4. SARIF report
+    const sarif = JSON.parse(renderSarifReport(calibratedResult));
+    assert.equal(sarif.runs[0].results[0].level, "error");
+    assert.equal(sarif.runs[0].results[1].level, "warning");
+    assert.equal(sarif.runs[0].results[2].level, "warning");
+  });
 });

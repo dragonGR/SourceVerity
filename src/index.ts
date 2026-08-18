@@ -17,7 +17,7 @@ export async function scanRepository(options?: ScanOptions | undefined) {
   const targetDir = options?.targetDir ?? process.cwd();
   const auditOpts: RunAuditOptions = {
     targetDir,
-    minConfidence: options?.minConfidence ?? "high",
+    minConfidence: options?.minConfidence ?? "medium",
     customIgnores: options?.customIgnores,
     changedFiles: options?.changedFiles,
   };

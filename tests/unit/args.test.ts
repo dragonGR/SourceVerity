@@ -10,7 +10,7 @@ describe("CLI argument parser and commands", () => {
     assert.equal(opts.command, "scan");
     assert.equal(opts.targetDir, ".");
     assert.equal(opts.format, "pretty");
-    assert.equal(opts.minConfidence, "high");
+    assert.equal(opts.minConfidence, "medium");
     assert.equal(opts.failOn, "error");
   });
 

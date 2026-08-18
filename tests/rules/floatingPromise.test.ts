@@ -268,7 +268,7 @@ function getService() {
     assert.equal(findings.length, 0);
   });
 
-  test("does not flag internal async function with exhaustive try/catch", () => {
+  test("flags internal async function with exhaustive try/catch with calibrated medium confidence warning", () => {
     const code = `
 async function refresh() {
   try {
@@ -282,7 +282,62 @@ function run() {
 }
     `.trim();
     const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.severity, "warning");
+    assert.equal(findings[0]?.confidence, "medium");
+    assert.equal(findings[0]?.message, "Promise returned by this call is not explicitly consumed.");
+  });
+
+  test("does not flag internal async function when explicitly voided", () => {
+    const code = `
+async function refresh() {
+  try {
+    await Promise.resolve();
+  } catch (error) {
+    console.error(error);
+  }
+}
+function run() {
+  void refresh();
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
     assert.equal(findings.length, 0);
+  });
+
+  test("flags local function with proven rejection propagation as error with high confidence", () => {
+    const code = `
+declare function syncRemote(): Promise<void>;
+async function checkAndSync() {
+  try {
+    await syncRemote();
+  } finally {
+    console.log("cleanup");
+  }
+}
+function run() {
+  checkAndSync();
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.severity, "error");
+    assert.equal(findings[0]?.confidence, "high");
+    assert.equal(findings[0]?.message, "Promise is discarded and its rejection can escape unhandled.");
+  });
+
+  test("flags unknown imported async function as warning with medium confidence", () => {
+    const code = `
+declare function saveContext(data: unknown): Promise<void>;
+function run() {
+  saveContext({ id: "123" });
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.severity, "warning");
+    assert.equal(findings[0]?.confidence, "medium");
+    assert.equal(findings[0]?.message, "Promise returned by this call is not explicitly consumed.");
   });
 
   test("flags arbitrary optional Promise union return type with calibrated medium confidence", () => {
@@ -309,6 +364,10 @@ function run() {
     `.trim();
     const findings = runRuleOnCode(floatingPromiseRule, code);
     assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+    assert.equal(findings[0]?.severity, "error");
+    assert.equal(findings[0]?.confidence, "high");
+    assert.equal(findings[0]?.message, "Promise is discarded and its rejection can escape unhandled.");
   });
 
   test("flags custom Promise-like thenable expression statement", () => {

@@ -342,6 +342,61 @@ function isSafeSynchronousPreamble(
 }
 
 /**
+ * Checks if a node contains an unhandled throw or await (not wrapped in an inner try-catch).
+ */
+function containsUncaughtAwaitOrThrow(node: tsType.Node, ts: typeof tsType): boolean {
+  let found = false;
+  function walk(n: tsType.Node) {
+    if (found) return;
+    // Stop at nested function boundaries
+    if (
+      n !== node &&
+      (ts.isFunctionDeclaration(n) ||
+        ts.isArrowFunction(n) ||
+        ts.isFunctionExpression(n) ||
+        ts.isMethodDeclaration(n))
+    ) {
+      return;
+    }
+
+    if (ts.isThrowStatement(n)) {
+      found = true;
+      return;
+    }
+
+    if (ts.isAwaitExpression(n)) {
+      found = true;
+      return;
+    }
+
+    if (ts.isTryStatement(n)) {
+      // If try has no catch clause, its tryBlock can propagate rejections!
+      if (!n.catchClause) {
+        if (containsAwaitOrThrow(n.tryBlock, ts)) {
+          found = true;
+          return;
+        }
+      } else {
+        // Has catch clause: check catch block for uncaught throw/await
+        if (containsUncaughtAwaitOrThrow(n.catchClause.block, ts)) {
+          found = true;
+          return;
+        }
+      }
+      if (n.finallyBlock && containsUncaughtAwaitOrThrow(n.finallyBlock, ts)) {
+        found = true;
+        return;
+      }
+      return;
+    }
+
+    n.forEachChild(walk);
+  }
+  walk(node);
+  return found;
+}
+
+/**
  * Analyzes the body of an async function to determine its rejection-handling behavior.
  */
 function analyzeAsyncFunctionBody(
@@ -355,7 +410,7 @@ function analyzeAsyncFunctionBody(
     if (isProvenNonThrowingExpression(body as tsType.Expression, ts, checker)) {
       return "handles-known-rejections";
     }
-    return "unknown";
+    return "propagates";
   }
 
   const statements = body.statements;
@@ -363,43 +418,43 @@ function analyzeAsyncFunctionBody(
     return "handles-known-rejections";
   }
 
-  let tryStatement: tsType.TryStatement | undefined;
-  let hasUnsafeStatementOutsideTry = false;
+  let hasUncaught = false;
+  let hasTryWithCatch = false;
 
   for (const stmt of statements) {
     if (ts.isTryStatement(stmt)) {
-      tryStatement = stmt;
-    } else if (!tryStatement && !isSafeSynchronousPreamble(stmt, ts, checker)) {
-      hasUnsafeStatementOutsideTry = true;
-    } else if (tryStatement && ts.isReturnStatement(stmt)) {
-      if (stmt.expression && !isProvenNonThrowingExpression(stmt.expression, ts, checker)) {
-        hasUnsafeStatementOutsideTry = true;
+      if (!stmt.catchClause) {
+        // try...finally with no catch: awaits in tryBlock propagate!
+        if (containsAwaitOrThrow(stmt.tryBlock, ts)) {
+          hasUncaught = true;
+        }
+      } else {
+        hasTryWithCatch = true;
+        // catch block: check if it re-throws or has uncaught await
+        if (containsUncaughtAwaitOrThrow(stmt.catchClause.block, ts)) {
+          hasUncaught = true;
+        }
       }
-    } else if (tryStatement && !isSafeSynchronousPreamble(stmt, ts, checker)) {
-      hasUnsafeStatementOutsideTry = true;
+      if (stmt.finallyBlock && containsUncaughtAwaitOrThrow(stmt.finallyBlock, ts)) {
+        hasUncaught = true;
+      }
+    } else {
+      if (containsAwaitOrThrow(stmt, ts)) {
+        hasUncaught = true;
+      }
     }
   }
 
-  if (tryStatement) {
-    // Has catch clause?
-    if (tryStatement.catchClause) {
-      const catchIsSafe = isBlockProvenNonThrowing(tryStatement.catchClause.block, ts, checker);
-      const finallyIsSafe = tryStatement.finallyBlock
-        ? isBlockProvenNonThrowing(tryStatement.finallyBlock, ts, checker)
-        : true;
-
-      if (catchIsSafe && finallyIsSafe && !hasUnsafeStatementOutsideTry) {
-        return "handles-known-rejections";
-      }
-
-      return "propagates";
-    } else if (tryStatement.finallyBlock) {
-      // Try-finally without catch propagates all rejections
-      return "propagates";
-    }
+  if (hasUncaught) {
+    return "propagates";
   }
 
-  return "propagates";
+  if (hasTryWithCatch) {
+    return "handles-known-rejections";
+  }
+
+  // If there are no awaits and no throws anywhere in the body
+  return "handles-known-rejections";
 }
 
 /**
@@ -457,12 +512,15 @@ function computeFunctionSummary(
   let promiseBehavior: PromiseBehavior = "unknown";
   let returnsCreatedPromise = false;
 
-  if (isAsync && body) {
-    promiseBehavior = analyzeAsyncFunctionBody(body, context);
-  } else if (returnsPromiseLike) {
-    promiseBehavior = "propagates";
+  if (body) {
+    if (isAsync) {
+      promiseBehavior = analyzeAsyncFunctionBody(body, context);
+    } else if (returnsPromiseLike) {
+      promiseBehavior = "propagates";
+    }
+  } else {
+    promiseBehavior = "unknown";
   }
-
   // Check if function explicitly creates / returns a Promise
   if (body) {
     function walkReturns(n: tsType.Node) {

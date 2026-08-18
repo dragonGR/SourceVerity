@@ -123,28 +123,14 @@ export function hasTerminalRejectionHandling(
     }
   }
 
-  // 3. Terminal .finally(cleanup) preceded by a rejection-handled chain or non-rejecting call
+  // 3. Terminal .finally(cleanup) preceded by a rejection-handled chain
   // e.g. verify().then(...).catch(handleError).finally(cleanup)
-  // e.g. scanForOrphan().finally(cleanup) where scanForOrphan handles all rejections internally
   if (methodName === "finally") {
     const receiver = callee.expression;
-    if (receiver) {
-      if (hasTerminalRejectionHandling(receiver, ts, checker)) {
-        return true;
-      }
-      const unwrappedReceiver = unwrapExpression(receiver, ts);
-      if (ts.isCallExpression(unwrappedReceiver)) {
-        const localDecl = resolveLocalOrProjectFunctionDeclaration(unwrappedReceiver, ts, checker);
-        if (localDecl) {
-          const summary = getFunctionSummary(localDecl, ts, checker);
-          if (summary.promiseBehavior === "handles-known-rejections") {
-            return true;
-          }
-        }
-      }
+    if (receiver && hasTerminalRejectionHandling(receiver, ts, checker)) {
+      return true;
     }
   }
-
   return false;
 }
 
@@ -328,21 +314,8 @@ export function evaluatePromiseConsumption(
     }
   }
 
-  // 5. Check if call expression invokes an internal/local function with complete rejection handling
+  // 5. Verified framework API call based on symbol origin and argument inspection
   if (ts.isCallExpression(unwrapped)) {
-    const localDecl = resolveLocalOrProjectFunctionDeclaration(unwrapped, ts, checker);
-    if (localDecl) {
-      const summary = getFunctionSummary(localDecl, ts, checker, context);
-      if (summary.promiseBehavior === "handles-known-rejections") {
-        return {
-          isConsumed: true,
-          reason: "Invoked local function handles all internal rejections exhaustively.",
-          isRejectionHandled: true,
-        };
-      }
-    }
-
-    // 6. Verified framework API call based on symbol origin and argument inspection
     const frameworkCheck = evaluateFrameworkPromiseCall(unwrapped, ts, checker);
     if (frameworkCheck.isHandled) {
       return {

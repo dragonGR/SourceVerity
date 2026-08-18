@@ -46,9 +46,8 @@ const CONFIDENCE_LEVELS: Record<Confidence, number> = {
  */
 export async function runAudit(options: RunAuditOptions): Promise<AuditResult> {
   const resolvedTarget = path.resolve(options.targetDir);
-  const minConfidence = options.minConfidence ?? "high";
+  const minConfidence = options.minConfidence ?? "medium";
   const minConfidenceLevel = CONFIDENCE_LEVELS[minConfidence];
-
   // 1. Discover repository structure and frameworks
   const repoContext = await discoverRepository(resolvedTarget);
   const fileFilter = await createFileFilter(resolvedTarget, options.customIgnores);

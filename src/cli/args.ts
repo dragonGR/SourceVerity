@@ -108,7 +108,7 @@ export function parseCliArgs(argv: readonly string[]): CliOptions {
   }
 
   // Min confidence validation
-  const rawConfidence = parsed.values["min-confidence"] ?? "high";
+  const rawConfidence = parsed.values["min-confidence"] ?? "medium";
   if (rawConfidence !== "high" && rawConfidence !== "medium" && rawConfidence !== "low") {
     throw new Error(`Invalid --min-confidence '${rawConfidence}'. Valid options: high, medium, low`);
   }
@@ -149,7 +149,7 @@ function createDefaultOptions(command: CliCommand): CliOptions {
     command,
     targetDir: ".",
     format: "pretty",
-    minConfidence: "high",
+    minConfidence: "medium",
     failOn: "error",
     updateBaseline: false,
     changedOnly: false,
