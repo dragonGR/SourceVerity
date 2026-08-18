@@ -1,0 +1,56 @@
+{
+  "name": "sourceverity",
+  "version": "1.0.0",
+  "description": "Repository-aware frontend correctness and quality auditor",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "sourceverity": "./bin/sourceverity.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean:dist": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\"",
+    "clean:tests": "node -e \"fs.rmSync('dist-tests', { recursive: true, force: true })\"",
+    "clean": "npm run clean:dist && npm run clean:tests",
+    "build": "npm run clean:dist && tsc",
+    "build:tests": "npm run clean:tests && tsc -p tsconfig.tests.json",
+    "test": "npm run build:tests && node scripts/run-tests.js",
+    "test:all": "npm run build:tests && node scripts/run-tests.js",
+    "typecheck": "tsc --noEmit -p tsconfig.tests.json",
+    "verify": "npm run build && npm run typecheck && npm run test && node scripts/verify-package.js",
+    "benchmark": "node scripts/benchmark.js"
+  },
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "dependencies": {
+    "ignore": "^5.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "typescript": "^5.8.0"
+  },
+  "keywords": [
+    "auditor",
+    "typescript",
+    "react",
+    "correctness",
+    "quality",
+    "type-safety",
+    "static-analysis"
+  ],
+  "license": "MIT"
+}
