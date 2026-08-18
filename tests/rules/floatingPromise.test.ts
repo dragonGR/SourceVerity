@@ -4,7 +4,7 @@ import { floatingPromiseRule } from "../../src/rules/async/floatingPromise.js";
 import { runRuleOnCode } from "./ruleTestUtils.js";
 
 describe("rule async/floating-promise", () => {
-  // --- NO FINDING (Explicitly Consumed) ---
+  // --- NO FINDING (Explicitly Consumed or Handled) ---
 
   test("does not flag awaited promise", () => {
     const code = `
@@ -83,6 +83,86 @@ async function run() {
     assert.equal(findings.length, 0);
   });
 
+  test("does not flag promise.catch(handler) expression statement", () => {
+    const code = `
+async function load(): Promise<string> { return "ok"; }
+function run() {
+  load().catch((err) => console.error(err));
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag promise.then(onFulfilled, onRejected) expression statement", () => {
+    const code = `
+async function load(): Promise<string> { return "ok"; }
+function run() {
+  load().then((r) => console.log(r), (err) => console.error(err));
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag promise.then(transform).catch(handler) expression statement", () => {
+    const code = `
+async function load(): Promise<string> { return "ok"; }
+function run() {
+  load().then((r) => r).catch((err) => console.error(err));
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag parenthesized promise.catch(handler)", () => {
+    const code = `
+async function load(): Promise<string> { return "ok"; }
+function run() {
+  (load().catch((err) => console.error(err)));
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag real-world import().then().catch() dynamic loader", () => {
+    const code = `
+declare function callback(err: Error | null, res?: unknown): void;
+function load() {
+  import('./locales/el/index')
+    .then((module) => {
+      callback(null, module.default);
+    })
+    .catch((err: unknown) => {
+      callback(err instanceof Error ? err : new Error(String(err)));
+    });
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag real-world navigator.clipboard.writeText().then(onFulfilled, onRejected)", () => {
+    const code = `
+declare const articleUrl: string;
+declare function setCopied(copied: boolean): void;
+function run() {
+  navigator.clipboard.writeText(articleUrl).then(
+    () => {
+      setCopied(true);
+    },
+    () => {
+      // intentionally ignored
+    },
+  );
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
   test("does not flag methods named catch or then on non-Promise objects", () => {
     const code = `
 class QueryBuilder {
@@ -99,13 +179,13 @@ function run() {
     assert.equal(findings.length, 0);
   });
 
-  // --- FINDINGS (Unconsumed Promise Expression Statements) ---
+  // --- FINDINGS (Unconsumed / Unhandled Promise Expression Statements) ---
 
-  test("flags bare promise expression statement", () => {
+  test("flags bare promise expression statement (doWork())", () => {
     const code = `
-async function load(): Promise<string> { return "ok"; }
+declare function doWork(): Promise<void>;
 function run() {
-  load();
+  doWork();
 }
     `.trim();
     const findings = runRuleOnCode(floatingPromiseRule, code);
@@ -113,22 +193,12 @@ function run() {
     assert.equal(findings[0]?.ruleId, "async/floating-promise");
   });
 
-  test("flags promise.then(handler) expression statement", () => {
+  test("flags promise.then(handleSuccess) expression statement", () => {
     const code = `
-async function load(): Promise<string> { return "ok"; }
+declare function doWork(): Promise<void>;
+declare function handleSuccess(): void;
 function run() {
-  load().then((r) => console.log(r));
-}
-    `.trim();
-    const findings = runRuleOnCode(floatingPromiseRule, code);
-    assert.equal(findings.length, 1);
-  });
-
-  test("flags promise.catch(handler) expression statement", () => {
-    const code = `
-async function load(): Promise<string> { return "ok"; }
-function run() {
-  load().catch((err) => console.error(err));
+  doWork().then(handleSuccess);
 }
     `.trim();
     const findings = runRuleOnCode(floatingPromiseRule, code);
@@ -137,31 +207,36 @@ function run() {
 
   test("flags promise.finally(cleanup) expression statement", () => {
     const code = `
-async function load(): Promise<string> { return "ok"; }
+declare function doWork(): Promise<void>;
+declare function cleanup(): void;
 function run() {
-  load().finally(() => console.log("done"));
+  doWork().finally(cleanup);
 }
     `.trim();
     const findings = runRuleOnCode(floatingPromiseRule, code);
     assert.equal(findings.length, 1);
   });
 
-  test("flags promise.catch(handler).then(next) expression statement", () => {
+  test("flags promise.then(handleSuccess).finally(cleanup) expression statement", () => {
+    const code = `
+declare function doWork(): Promise<void>;
+declare function handleSuccess(): void;
+declare function cleanup(): void;
+function run() {
+  doWork()
+    .then(handleSuccess)
+    .finally(cleanup);
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+  });
+
+  test("flags promise.catch(handler).then(onFulfilled) expression statement", () => {
     const code = `
 async function load(): Promise<string> { return "ok"; }
 function run() {
   load().catch((err) => "").then((r) => console.log(r));
-}
-    `.trim();
-    const findings = runRuleOnCode(floatingPromiseRule, code);
-    assert.equal(findings.length, 1);
-  });
-
-  test("flags promise.then(next).catch(handler) expression statement", () => {
-    const code = `
-async function load(): Promise<string> { return "ok"; }
-function run() {
-  load().then((r) => r).catch((err) => console.error(err));
 }
     `.trim();
     const findings = runRuleOnCode(floatingPromiseRule, code);
@@ -179,32 +254,10 @@ function run() {
     assert.equal(findings.length, 1);
   });
 
-  test("flags promise.then(onFulfilled, onRejected) expression statement", () => {
-    const code = `
-async function load(): Promise<string> { return "ok"; }
-function run() {
-  load().then((r) => console.log(r), (err) => console.error(err));
-}
-    `.trim();
-    const findings = runRuleOnCode(floatingPromiseRule, code);
-    assert.equal(findings.length, 1);
-  });
-
-  test("flags parenthesized unconsumed promise (promise.catch(handler))", () => {
-    const code = `
-async function load(): Promise<string> { return "ok"; }
-function run() {
-  (load().catch((err) => console.error(err)));
-}
-    `.trim();
-    const findings = runRuleOnCode(floatingPromiseRule, code);
-    assert.equal(findings.length, 1);
-  });
-
   test("flags custom Promise-like thenable expression statement", () => {
     const code = `
 interface CustomThenable<T> {
-  then(onfulfilled?: (value: T) => any): any;
+  then(onfulfilled?: (value: T) => unknown): unknown;
 }
 declare function makeThenable(): CustomThenable<number>;
 function run() {

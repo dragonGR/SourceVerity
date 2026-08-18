@@ -190,4 +190,146 @@ function CustomSignalComponent() {
     const findings = runRuleOnCode(eventListenerCleanupRule, code);
     assert.equal(findings.length, 1, "Custom object with signal property is not an authentic AbortController");
   });
+
+  test("does not flag constant event expression cleanup (EVENT ↔ EVENT)", () => {
+    const code = `
+import { useEffect } from 'react';
+
+const EVENT = "open-settings";
+
+function SettingsComponent() {
+  useEffect(() => {
+    const handler = () => {};
+
+    window.addEventListener(EVENT, handler);
+
+    return () => {
+      window.removeEventListener(EVENT, handler);
+    };
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag aliased constant event expression (const EVENT_ALIAS = EVENT)", () => {
+    const code = `
+import { useEffect } from 'react';
+
+const EVENT = "click";
+const EVENT_ALIAS = EVENT;
+
+function ClickComponent() {
+  useEffect(() => {
+    const handler = () => {};
+    window.addEventListener(EVENT_ALIAS, handler);
+    return () => {
+      window.removeEventListener(EVENT, handler);
+    };
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag real-world OPEN_COOKIE_SETTINGS_EVENT paired listener cleanup", () => {
+    const code = `
+import { useEffect } from 'react';
+
+const OPEN_COOKIE_SETTINGS_EVENT = "open-cookie-settings";
+
+function CookieBanner() {
+  useEffect(() => {
+    const openSettings = () => {};
+
+    window.addEventListener(OPEN_COOKIE_SETTINGS_EVENT, openSettings);
+
+    return () => {
+      window.removeEventListener(OPEN_COOKIE_SETTINGS_EVENT, openSettings);
+    };
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag two independent React effects using the same constant", () => {
+    const code = `
+import { useEffect } from 'react';
+
+const EVENT = "resize";
+
+function MultiEffectComponent() {
+  useEffect(() => {
+    const handleFirst = () => {};
+    window.addEventListener(EVENT, handleFirst);
+    return () => {
+      window.removeEventListener(EVENT, handleFirst);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleSecond = () => {};
+    window.addEventListener(EVENT, handleSecond);
+    return () => {
+      window.removeEventListener(EVENT, handleSecond);
+    };
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("flags mismatched constant event expressions (EVENT_A vs EVENT_B)", () => {
+    const code = `
+import { useEffect } from 'react';
+
+const EVENT_A = "click";
+const EVENT_B = "keydown";
+
+function MismatchComponent() {
+  useEffect(() => {
+    const handler = () => {};
+    window.addEventListener(EVENT_A, handler);
+    return () => {
+      window.removeEventListener(EVENT_B, handler);
+    };
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.ok(findings[0]?.message.includes("click") || findings[0]?.message.includes("EVENT_A"));
+  });
+
+  test("flags handler mismatch when using constant event expression", () => {
+    const code = `
+import { useEffect } from 'react';
+
+const EVENT = "click";
+
+function HandlerMismatchComponent() {
+  useEffect(() => {
+    const handler1 = () => {};
+    const handler2 = () => {};
+    window.addEventListener(EVENT, handler1);
+    return () => {
+      window.removeEventListener(EVENT, handler2);
+    };
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 1);
+  });
 });

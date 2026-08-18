@@ -34,12 +34,229 @@ export const eventListenerCleanupRule: Rule = {
         return;
       }
 
+      interface EventExpressionInfo {
+        readonly rawText: string;
+        readonly literalValue?: string | undefined;
+        readonly symbol?: tsType.Symbol | undefined;
+        readonly rootSymbol?: tsType.Symbol | undefined;
+      }
+
+      interface HandlerExpressionInfo {
+        readonly isInlineHandler: boolean;
+        readonly handlerName?: string | undefined;
+        readonly symbol?: tsType.Symbol | undefined;
+      }
+
+      interface TargetExpressionInfo {
+        readonly text: string;
+        readonly symbol?: tsType.Symbol | undefined;
+      }
+
+      function resolveEventExpression(
+        expr: tsType.Expression,
+        chk: tsType.TypeChecker | undefined,
+        t: typeof tsType
+      ): EventExpressionInfo {
+        let current: tsType.Expression = expr;
+        while (t.isParenthesizedExpression(current)) {
+          current = current.expression;
+        }
+
+        if (t.isStringLiteral(current) || t.isNoSubstitutionTemplateLiteral(current)) {
+          return {
+            rawText: current.text,
+            literalValue: current.text,
+          };
+        }
+
+        if (t.isIdentifier(current)) {
+          const rawText = current.text;
+          if (!chk) {
+            return { rawText };
+          }
+
+          const sym = chk.getSymbolAtLocation(current);
+          let rootSym = sym;
+          if (rootSym && (rootSym.flags & t.SymbolFlags.Alias) !== 0) {
+            try {
+              rootSym = chk.getAliasedSymbol(rootSym);
+            } catch {
+              // ignore
+            }
+          }
+
+          let literalValue: string | undefined;
+          let targetSym = sym;
+          const visitedSyms = new Set<tsType.Symbol>();
+          while (targetSym && !visitedSyms.has(targetSym)) {
+            visitedSyms.add(targetSym);
+            const decl = targetSym.valueDeclaration ?? targetSym.declarations?.[0];
+            if (decl && t.isVariableDeclaration(decl) && decl.initializer) {
+              let init = decl.initializer;
+              while (t.isParenthesizedExpression(init)) {
+                init = init.expression;
+              }
+              if (t.isStringLiteral(init) || t.isNoSubstitutionTemplateLiteral(init)) {
+                literalValue = init.text;
+                break;
+              } else if (t.isIdentifier(init)) {
+                const nextSym = chk.getSymbolAtLocation(init);
+                if (nextSym) {
+                  targetSym = nextSym;
+                  if (!rootSym) rootSym = nextSym;
+                  continue;
+                }
+              }
+            }
+            break;
+          }
+
+          if (literalValue === undefined) {
+            try {
+              const type = chk.getTypeAtLocation(current);
+              if (type.isStringLiteral()) {
+                literalValue = type.value;
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          return {
+            rawText,
+            literalValue,
+            symbol: sym,
+            rootSymbol: rootSym,
+          };
+        }
+
+        if (t.isPropertyAccessExpression(current)) {
+          const rawText = current.getText();
+          let literalValue: string | undefined;
+          let sym: tsType.Symbol | undefined;
+          let rootSym: tsType.Symbol | undefined;
+
+          if (chk) {
+            sym = chk.getSymbolAtLocation(current);
+            rootSym = sym;
+            try {
+              const type = chk.getTypeAtLocation(current);
+              if (type.isStringLiteral()) {
+                literalValue = type.value;
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          return {
+            rawText,
+            literalValue,
+            symbol: sym,
+            rootSymbol: rootSym,
+          };
+        }
+
+        return {
+          rawText: current.getText(),
+        };
+      }
+
+      function areEventExpressionsIdentical(
+        addInfo: EventExpressionInfo,
+        remInfo: EventExpressionInfo
+      ): boolean {
+        if (addInfo.literalValue !== undefined && remInfo.literalValue !== undefined) {
+          return addInfo.literalValue === remInfo.literalValue;
+        }
+        if (addInfo.rootSymbol && remInfo.rootSymbol && addInfo.rootSymbol === remInfo.rootSymbol) {
+          return true;
+        }
+        if (addInfo.symbol && remInfo.symbol && addInfo.symbol === remInfo.symbol) {
+          return true;
+        }
+        if (addInfo.rawText && remInfo.rawText && addInfo.rawText === remInfo.rawText) {
+          return true;
+        }
+        return false;
+      }
+
+      function resolveHandlerExpression(
+        expr: tsType.Expression,
+        chk: tsType.TypeChecker | undefined,
+        t: typeof tsType
+      ): HandlerExpressionInfo {
+        let current: tsType.Expression = expr;
+        while (t.isParenthesizedExpression(current)) {
+          current = current.expression;
+        }
+
+        if (t.isArrowFunction(current) || t.isFunctionExpression(current)) {
+          return { isInlineHandler: true };
+        }
+
+        if (t.isIdentifier(current)) {
+          const sym = chk ? chk.getSymbolAtLocation(current) : undefined;
+          return {
+            isInlineHandler: false,
+            handlerName: current.text,
+            symbol: sym,
+          };
+        }
+
+        return {
+          isInlineHandler: false,
+          handlerName: current.getText(),
+          symbol: chk ? chk.getSymbolAtLocation(current) : undefined,
+        };
+      }
+
+      function areHandlersIdentical(
+        addHandler: HandlerExpressionInfo,
+        remHandler: HandlerExpressionInfo
+      ): boolean {
+        if (addHandler.isInlineHandler || remHandler.isInlineHandler) {
+          return false;
+        }
+        if (addHandler.symbol && remHandler.symbol && addHandler.symbol === remHandler.symbol) {
+          return true;
+        }
+        if (addHandler.handlerName && remHandler.handlerName && addHandler.handlerName === remHandler.handlerName) {
+          return true;
+        }
+        return false;
+      }
+
+      function resolveTargetExpression(
+        expr: tsType.Expression,
+        chk: tsType.TypeChecker | undefined,
+        t: typeof tsType
+      ): TargetExpressionInfo {
+        let current: tsType.Expression = expr;
+        while (t.isParenthesizedExpression(current)) {
+          current = current.expression;
+        }
+        const text = current.getText();
+        const symbol = chk ? chk.getSymbolAtLocation(current) : undefined;
+        return { text, symbol };
+      }
+
+      function areTargetsIdentical(
+        addTarget: TargetExpressionInfo,
+        remTarget: TargetExpressionInfo
+      ): boolean {
+        if (addTarget.symbol && remTarget.symbol && addTarget.symbol === remTarget.symbol) {
+          return true;
+        }
+        return addTarget.text === remTarget.text;
+      }
+
       // Collect addEventListener calls inside the effect callback
       interface AddListenerInfo {
         readonly node: tsType.CallExpression;
-        readonly eventType: string;
-        readonly handlerName?: string | undefined;
-        readonly isInlineHandler: boolean;
+        readonly targetInfo: TargetExpressionInfo;
+        readonly eventInfo: EventExpressionInfo;
+        readonly handlerInfo: HandlerExpressionInfo;
         readonly controllerName?: string | undefined;
         readonly controllerSymbol?: tsType.Symbol | undefined;
       }
@@ -47,12 +264,13 @@ export const eventListenerCleanupRule: Rule = {
       const addListeners: AddListenerInfo[] = [];
 
       // Collect removeEventListener calls inside cleanup returns
-      const removeListeners: Array<{
-        eventType: string;
-        handlerName?: string | undefined;
-        isInlineHandler: boolean;
-      }> = [];
+      interface RemoveListenerInfo {
+        readonly targetInfo: TargetExpressionInfo;
+        readonly eventInfo: EventExpressionInfo;
+        readonly handlerInfo: HandlerExpressionInfo;
+      }
 
+      const removeListeners: RemoveListenerInfo[] = [];
       const abortedControllerNames = new Set<string>();
       const abortedControllerSymbols = new Set<tsType.Symbol>();
       let hasCleanupReturn = false;
@@ -92,9 +310,9 @@ export const eventListenerCleanupRule: Rule = {
           const eventTypeArg = args[0];
           const handlerArg = args[1];
           if (eventTypeArg && handlerArg) {
-            const eventType = ts.isStringLiteral(eventTypeArg) ? eventTypeArg.text : "";
-            const isInline = ts.isArrowFunction(handlerArg) || ts.isFunctionExpression(handlerArg);
-            const handlerName = ts.isIdentifier(handlerArg) ? handlerArg.text : undefined;
+            const targetInfo = resolveTargetExpression(target, checker, ts);
+            const eventInfo = resolveEventExpression(eventTypeArg, checker, ts);
+            const handlerInfo = resolveHandlerExpression(handlerArg, checker, ts);
 
             let controllerName: string | undefined;
             let controllerSymbol: tsType.Symbol | undefined;
@@ -128,9 +346,9 @@ export const eventListenerCleanupRule: Rule = {
 
             addListeners.push({
               node: n,
-              eventType,
-              handlerName,
-              isInlineHandler: isInline,
+              targetInfo,
+              eventInfo,
+              handlerInfo,
               controllerName,
               controllerSymbol,
             });
@@ -158,18 +376,19 @@ export const eventListenerCleanupRule: Rule = {
         function walkCleanup(cn: tsType.Node) {
           // 1. removeEventListener calls
           if (ts && ts.isCallExpression(cn) && ts.isPropertyAccessExpression(cn.expression) && cn.expression.name.text === "removeEventListener") {
+            const target = cn.expression.expression;
             const args = cn.arguments;
             const eventTypeArg = args[0];
             const handlerArg = args[1];
             if (eventTypeArg && handlerArg) {
-              const eventType = ts.isStringLiteral(eventTypeArg) ? eventTypeArg.text : "";
-              const isInline = ts.isArrowFunction(handlerArg) || ts.isFunctionExpression(handlerArg);
-              const handlerName = ts.isIdentifier(handlerArg) ? handlerArg.text : undefined;
+              const targetInfo = resolveTargetExpression(target, checker, ts);
+              const eventInfo = resolveEventExpression(eventTypeArg, checker, ts);
+              const handlerInfo = resolveHandlerExpression(handlerArg, checker, ts);
 
               removeListeners.push({
-                eventType,
-                handlerName,
-                isInlineHandler: isInline,
+                targetInfo,
+                eventInfo,
+                handlerInfo,
               });
             }
           }
@@ -210,10 +429,13 @@ export const eventListenerCleanupRule: Rule = {
           // 2. Check removeEventListener cleanup
           if (!isCleanedUp) {
             for (const rem of removeListeners) {
-              if (listener.eventType && rem.eventType && listener.eventType === rem.eventType) {
-                if (listener.isInlineHandler || rem.isInlineHandler) {
+              if (
+                areTargetsIdentical(listener.targetInfo, rem.targetInfo) &&
+                areEventExpressionsIdentical(listener.eventInfo, rem.eventInfo)
+              ) {
+                if (listener.handlerInfo.isInlineHandler || rem.handlerInfo.isInlineHandler) {
                   isCleanedUp = false;
-                } else if (listener.handlerName && rem.handlerName && listener.handlerName === rem.handlerName) {
+                } else if (areHandlersIdentical(listener.handlerInfo, rem.handlerInfo)) {
                   isCleanedUp = true;
                   break;
                 }
@@ -224,18 +446,20 @@ export const eventListenerCleanupRule: Rule = {
 
         if (!isCleanedUp) {
           const range = getNodeSourceRange(listener.node, sourceFile);
-          const detailMsg = listener.isInlineHandler && !listener.controllerName
+          const detailMsg = listener.handlerInfo.isInlineHandler && !listener.controllerName
             ? "Inline callback function in addEventListener cannot be removed because a new function reference is created."
             : hasCleanupReturn
             ? `Neither matching removeEventListener nor controller.abort() was found in the cleanup function.`
             : "No cleanup function was returned from the lifecycle hook.";
+
+          const eventDisplay = listener.eventInfo.literalValue ?? listener.eventInfo.rawText ?? "event";
 
           context.report({
             ruleId: "browser/event-listener-cleanup",
             category: "browser",
             severity: "error",
             confidence: "high",
-            message: `addEventListener for '${listener.eventType || "event"}' in lifecycle hook is missing matching cleanup.`,
+            message: `addEventListener for '${eventDisplay}' in lifecycle hook is missing matching cleanup.`,
             file: sourceFile.fileName,
             range,
             evidence: [
