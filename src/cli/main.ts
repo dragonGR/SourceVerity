@@ -20,6 +20,7 @@ import { renderJsonReport } from "../reporters/json.js";
 import { renderAgentReport } from "../reporters/agent.js";
 import { renderSarifReport } from "../reporters/sarif.js";
 import { createStyler } from "../core/terminal.js";
+import { SOURCEVERITY_VERSION } from "../core/version.js";
 import "../rules/index.js";
 
 /**
@@ -45,7 +46,7 @@ export async function runCli(argv: readonly string[]): Promise<ExitCode> {
 
   // 2. Version command
   if (options.command === "version") {
-    process.stdout.write("1.0.0\n");
+    process.stdout.write(`${SOURCEVERITY_VERSION}\n`);
     return EXIT_CODES.SUCCESS;
   }
 

@@ -2,6 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { SOURCEVERITY_VERSION } from "../../src/core/version.js";
 
 describe("package.json metadata and structure", () => {
   const pkgPath = path.resolve(process.cwd(), "package.json");
@@ -10,7 +11,8 @@ describe("package.json metadata and structure", () => {
 
   test("package has correct identity and engines", () => {
     assert.equal(pkg.name, "sourceverity");
-    assert.equal(pkg.version, "1.0.0");
+    assert.equal(pkg.version, SOURCEVERITY_VERSION);
+    assert.match(pkg.version, /^\d+\.\d+\.\d+/);
     assert.equal(pkg.type, "module");
     assert.equal(pkg.license, "MIT");
     assert.equal(pkg.main, "./dist/index.js");

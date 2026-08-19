@@ -1,5 +1,6 @@
 import { createStyler, type TerminalStyler } from "../core/terminal.js";
 import type { AuditResult, Finding, RuleCategory } from "../core/types.js";
+import { SOURCEVERITY_VERSION } from "../core/version.js";
 
 export interface TerminalReporterOptions {
   readonly color?: boolean | undefined;
@@ -26,7 +27,7 @@ export function renderTerminalReport(result: AuditResult, options?: TerminalRepo
   const lines: string[] = [];
 
   // 1. Header & Repository Overview
-  lines.push(styler.bold("SourceVerity 1.0.0"));
+  lines.push(styler.bold(`SourceVerity ${SOURCEVERITY_VERSION}`));
   lines.push("");
   lines.push(styler.bold("Repository"));
 

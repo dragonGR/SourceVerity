@@ -1,4 +1,5 @@
 import type { AuditResult } from "../core/types.js";
+import { SOURCEVERITY_VERSION } from "../core/version.js";
 
 /**
  * Formats AuditResult as standard SARIF 2.1.0 log format for GitHub Code Scanning.
@@ -50,7 +51,7 @@ export function renderSarifReport(result: AuditResult): string {
         tool: {
           driver: {
             name: "sourceverity",
-            version: "1.0.0",
+            version: SOURCEVERITY_VERSION,
             rules: Array.from(ruleMap.values()).map((r) => ({
               id: r.id,
               name: r.name,

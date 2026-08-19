@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { runCli } from "../../src/cli/main.js";
 import { EXIT_CODES } from "../../src/cli/exitCodes.js";
+import { SOURCEVERITY_VERSION } from "../../src/core/version.js";
 
 describe("CLI main execution and subcommands", () => {
   const fixturesDir = path.resolve(process.cwd(), "tests/fixtures");
@@ -64,7 +65,7 @@ describe("CLI operating-system subprocess execution and exit codes", () => {
   test("sourceverity --version subprocess exits with 0", async () => {
     const { code, stdout } = await runSubprocess(["--version"]);
     assert.equal(code, 0);
-    assert.ok(stdout.includes("1.0.0"));
+    assert.equal(stdout.trim(), SOURCEVERITY_VERSION);
   });
 
   test("sourceverity --help subprocess exits with 0", async () => {

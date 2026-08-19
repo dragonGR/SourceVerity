@@ -10,6 +10,12 @@ async function verifyPackage() {
   console.log("Running SourceVerity Package Verification & Clean Consumer Smoke Test...\n");
   const rootDir = process.cwd();
 
+  // Read authoritative package metadata
+  const pkgJsonRaw = await fs.readFile(path.join(rootDir, "package.json"), "utf-8");
+  const pkgJson = JSON.parse(pkgJsonRaw);
+  const expectedVersion = pkgJson.version;
+  console.log(`   Authoritative package version: ${expectedVersion}`);
+
   // 1. Pack tarball
   console.log("1. Running npm pack...");
   const { stdout: packStdout } = await execFileAsync("npm", ["pack", "--json"], { cwd: rootDir });
@@ -74,8 +80,9 @@ async function verifyPackage() {
     // 4. Verify CLI execution from installed package
     console.log("4. Verifying CLI execution in consumer...");
     const { stdout: verStdout } = await execFileAsync("npx", ["sourceverity", "--version"], { cwd: consumerDir });
-    if (!verStdout.includes("1.0.0")) {
-      throw new Error(`CLI --version failed in consumer. Output: ${verStdout}`);
+    const reportedCliVersion = verStdout.trim();
+    if (reportedCliVersion !== expectedVersion) {
+      throw new Error(`CLI --version mismatch in consumer. Expected '${expectedVersion}', got '${reportedCliVersion}'`);
     }
 
     const { stdout: scanStdout } = await execFileAsync("npx", ["sourceverity", "scan", ".", "--format", "json"], { cwd: consumerDir });
@@ -88,9 +95,15 @@ async function verifyPackage() {
     // 5. Verify Programmatic ESM import
     console.log("5. Verifying programmatic API import in consumer...");
     const consumerScript = `
-import { scanRepository } from "sourceverity";
+import { scanRepository, SOURCEVERITY_VERSION, getSourceVerityVersion } from "sourceverity";
 
 async function run() {
+  if (SOURCEVERITY_VERSION !== "${expectedVersion}") {
+    throw new Error("SOURCEVERITY_VERSION mismatch in consumer: expected ${expectedVersion}, got " + SOURCEVERITY_VERSION);
+  }
+  if (getSourceVerityVersion() !== "${expectedVersion}") {
+    throw new Error("getSourceVerityVersion mismatch in consumer: expected ${expectedVersion}, got " + getSourceVerityVersion());
+  }
   const result = await scanRepository({ targetDir: process.cwd() });
   if (!result || !Array.isArray(result.findings)) {
     throw new Error("scanRepository returned invalid result structure");

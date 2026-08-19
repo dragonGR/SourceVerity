@@ -4,6 +4,7 @@ import { renderTerminalReport } from "../../src/reporters/terminal.js";
 import { renderJsonReport } from "../../src/reporters/json.js";
 import { renderAgentReport } from "../../src/reporters/agent.js";
 import { renderSarifReport } from "../../src/reporters/sarif.js";
+import { SOURCEVERITY_VERSION } from "../../src/core/version.js";
 import type { AuditResult } from "../../src/core/types.js";
 
 describe("reporters and output formatters", () => {
@@ -52,7 +53,7 @@ describe("reporters and output formatters", () => {
 
   test("terminal report renders cleanly with no-color", () => {
     const text = renderTerminalReport(sampleResult, { color: false });
-    assert.ok(text.includes("SourceVerity 1.0.0"));
+    assert.ok(text.includes(`SourceVerity ${SOURCEVERITY_VERSION}`));
     assert.ok(text.includes("TypeScript   5.8.0"));
     assert.ok(text.includes("React        19.0.0"));
     assert.ok(text.includes("Type safety       1 error"));
@@ -75,7 +76,7 @@ describe("reporters and output formatters", () => {
 
     assert.equal(parsed.schemaVersion, 1);
     assert.equal(parsed.tool.name, "sourceverity");
-    assert.equal(parsed.tool.version, "1.0.0");
+    assert.equal(parsed.tool.version, SOURCEVERITY_VERSION);
     assert.equal(parsed.repository.typescript, "5.8.0");
     assert.equal(parsed.repository.react, "19.0.0");
     assert.equal(parsed.summary.errors, 1);
@@ -93,6 +94,7 @@ describe("reporters and output formatters", () => {
     assert.equal(parsed.version, "2.1.0");
     assert.ok(Array.isArray(parsed.runs));
     assert.equal(parsed.runs[0].tool.driver.name, "sourceverity");
+    assert.equal(parsed.runs[0].tool.driver.version, SOURCEVERITY_VERSION);
     assert.equal(parsed.runs[0].results.length, 1);
     assert.equal(parsed.runs[0].results[0].ruleId, "typescript/unsafe-unvalidated-assertion");
     assert.equal(parsed.runs[0].results[0].level, "error");

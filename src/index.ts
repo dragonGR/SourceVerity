@@ -42,3 +42,4 @@ export type { StrictnessReport, StrictnessFlagStatus };
 export type * from "./core/types.js";
 export type * from "./baseline/types.js";
 export { createBaseline, compareWithBaseline, loadBaseline, saveBaseline } from "./baseline/manager.js";
+export { SOURCEVERITY_VERSION, getSourceVerityVersion } from "./core/version.js";

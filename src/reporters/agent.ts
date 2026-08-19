@@ -1,4 +1,5 @@
 import type { AuditResult, Finding } from "../core/types.js";
+import { SOURCEVERITY_VERSION } from "../core/version.js";
 
 export interface AgentFinding {
   readonly fingerprint: string;
@@ -21,7 +22,7 @@ export interface AgentReport {
   readonly schemaVersion: 1;
   readonly tool: {
     readonly name: "sourceverity";
-    readonly version: "1.0.0";
+    readonly version: string;
   };
   readonly repository: {
     readonly typescript?: string | undefined;
@@ -60,7 +61,7 @@ export function renderAgentReport(result: AuditResult): string {
     schemaVersion: 1,
     tool: {
       name: "sourceverity",
-      version: "1.0.0",
+      version: SOURCEVERITY_VERSION,
     },
     repository: {
       typescript: result.repository.typescriptVersion,
