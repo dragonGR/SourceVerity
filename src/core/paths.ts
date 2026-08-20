@@ -27,10 +27,3 @@ export function normalizePath(filePath: string, relativeTo?: string): string {
 
   return normalized;
 }
-
-/**
- * Determines whether a file path has an accepted TypeScript or JavaScript extension.
- */
-export function isSourceFile(filePath: string): boolean {
-  return /\.(?:[cm]?[jt]sx?|json)$/i.test(filePath);
-}

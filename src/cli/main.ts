@@ -2,7 +2,7 @@ import path from "node:path";
 import { parseCliArgs, type CliOptions } from "./args.js";
 import { EXIT_CODES, type ExitCode } from "./exitCodes.js";
 import { getHelpText } from "./help.js";
-import { runAudit } from "../engine/runner.js";
+import { runAudit, computeAuditSummary } from "../engine/runner.js";
 import { globalRuleRegistry } from "../engine/registry.js";
 import { discoverRepository } from "../repository/detector.js";
 import { loadRepositoryTypeScript } from "../repository/tsLoader.js";
@@ -137,6 +137,11 @@ export async function runCli(argv: readonly string[]): Promise<ExitCode> {
       effectiveResult = {
         ...result,
         findings: delta.newFindings,
+        summary: computeAuditSummary(
+          delta.newFindings,
+          result.summary.filesAnalyzed,
+          result.summary.projectsCount
+        ),
       };
       if (!options.quiet && options.format === "pretty") {
         process.stdout.write(`Baseline check against '${baselineFile}': ${delta.baselineCount} baseline, ${delta.newCount} new, ${delta.resolvedCount} resolved.\n\n`);

@@ -28,7 +28,7 @@ export function createBaseline(findings: readonly Finding[], repoRoot: string): 
   return {
     version: 1,
     generatedAt: new Date().toISOString(),
-    repositoryRoot: normalizePath(repoRoot),
+    repositoryRoot: ".",
     entries,
   };
 }

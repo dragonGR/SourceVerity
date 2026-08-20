@@ -2,6 +2,75 @@ import type * as tsType from "typescript";
 import { getNodeSourceRange } from "../../engine/symbols.js";
 import type { Rule, RuleContext } from "../../core/types.js";
 
+function getLiteralIntegerIndex(expr: tsType.Expression, ts: typeof tsType): number | undefined {
+  let unwrapped = expr;
+  while (ts.isParenthesizedExpression(unwrapped)) {
+    unwrapped = unwrapped.expression;
+  }
+  if (ts.isNumericLiteral(unwrapped)) {
+    const val = Number(unwrapped.text);
+    if (Number.isInteger(val) && val >= 0) {
+      return val;
+    }
+  }
+  if (ts.isStringLiteral(unwrapped)) {
+    if (/^\d+$/.test(unwrapped.text)) {
+      const val = Number(unwrapped.text);
+      if (Number.isInteger(val) && val >= 0) {
+        return val;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isStaticallySafeTupleAccess(
+  index: number,
+  type: tsType.Type,
+  checker: tsType.TypeChecker,
+  ts: typeof tsType
+): boolean {
+  if (type.isUnion()) {
+    return type.types.every((t) => isStaticallySafeTupleAccess(index, t, checker, ts));
+  }
+
+  if (!checker.isTupleType(type)) {
+    return false;
+  }
+
+  // In TypeScript TypeChecker, TupleType target stores elementFlags
+  // sourceverity-disable-next-line typescript/non-null-assertion-risk -- compiler internal property access guarded by isTupleType
+  const target = (type as { target?: { elementFlags?: readonly number[] } }).target ?? (type as { elementFlags?: readonly number[] });
+  const elementFlags = target.elementFlags;
+  if (!elementFlags || index < 0 || index >= elementFlags.length) {
+    return false;
+  }
+
+  const flag = elementFlags[index];
+  if (flag === undefined) {
+    return false;
+  }
+
+  // ts.ElementFlags: Required = 1, Optional = 2, Rest = 4, Variadic = 8
+  const isRequired = (flag & 1) !== 0;
+  const isOptionalOrRest = (flag & (2 | 4 | 8)) !== 0;
+
+  return isRequired && !isOptionalOrRest;
+}
+
+function isStaticallySafeIndexAccess(
+  argExpr: tsType.Expression,
+  containerType: tsType.Type,
+  checker: tsType.TypeChecker,
+  ts: typeof tsType
+): boolean {
+  const index = getLiteralIntegerIndex(argExpr, ts);
+  if (index === undefined) {
+    return false;
+  }
+  return isStaticallySafeTupleAccess(index, containerType, checker, ts);
+}
+
 export const uncheckedIndexAccessRule: Rule = {
   meta: {
     id: "typescript/unchecked-index-access",
@@ -50,6 +119,12 @@ export const uncheckedIndexAccessRule: Rule = {
       if (isDereferenced) {
         try {
           const containerType = checker.getTypeAtLocation(node.expression);
+
+          // If the element access is proven statically safe (e.g. required fixed tuple index), do not report
+          if (isStaticallySafeIndexAccess(node.argumentExpression, containerType, checker, ts)) {
+            return;
+          }
+
           // Check if container type is an Array, Tuple, or Record
           const isArrayOrRecord =
             checker.isArrayType(containerType) ||

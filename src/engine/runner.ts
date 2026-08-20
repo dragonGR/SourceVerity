@@ -126,8 +126,20 @@ export async function runAudit(options: RunAuditOptions): Promise<AuditResult> {
     }
   }
 
-  // 4. Sort findings strictly and deterministically
-  const sortedFindings = [...rawFindings].sort((a, b) => {
+  // 4. Deduplicate findings across multi-project programs by exact semantic identity
+  const seenFindingKeys = new Set<string>();
+  const deduplicatedFindings: Finding[] = [];
+
+  for (const f of rawFindings) {
+    const key = `${f.file}:${f.range.start.line}:${f.range.start.column}:${f.range.end.line}:${f.range.end.column}:${f.ruleId}:${f.fingerprint}`;
+    if (!seenFindingKeys.has(key)) {
+      seenFindingKeys.add(key);
+      deduplicatedFindings.push(f);
+    }
+  }
+
+  // 5. Sort findings strictly and deterministically
+  const sortedFindings = deduplicatedFindings.sort((a, b) => {
     // 1. File path ASC
     const fileCmp = a.file.localeCompare(b.file);
     if (fileCmp !== 0) return fileCmp;
@@ -152,35 +164,12 @@ export async function runAudit(options: RunAuditOptions): Promise<AuditResult> {
     return a.fingerprint.localeCompare(b.fingerprint);
   });
 
-  // 5. Build summary
-  let errors = 0;
-  let warnings = 0;
-  let info = 0;
-  let highConfidence = 0;
-  let mediumConfidence = 0;
-  let lowConfidence = 0;
-
-  for (const f of sortedFindings) {
-    if (f.severity === "error") errors++;
-    else if (f.severity === "warning") warnings++;
-    else if (f.severity === "info") info++;
-
-    if (f.confidence === "high") highConfidence++;
-    else if (f.confidence === "medium") mediumConfidence++;
-    else if (f.confidence === "low") lowConfidence++;
-  }
-
-  const summary: AuditSummary = {
-    errors,
-    warnings,
-    info,
-    highConfidence,
-    mediumConfidence,
-    lowConfidence,
-    filesAnalyzed: analyzedFiles.size,
-    projectsCount: repoContext.packages.length || 1,
-  };
-
+  // 6. Build authoritative summary
+  const summary = computeAuditSummary(
+    sortedFindings,
+    analyzedFiles.size,
+    repoContext.packages.length || 1
+  );
   const repositorySummary: RepositorySummary = {
     typescriptVersion: tsInst?.version,
     reactVersion: repoContext.reactVersion,
@@ -194,5 +183,43 @@ export async function runAudit(options: RunAuditOptions): Promise<AuditResult> {
     summary,
     repository: repositorySummary,
     skippedSemanticRules: skippedSemanticRules.length > 0 ? skippedSemanticRules : undefined,
+  };
+}
+
+/**
+ * Derives a consistent, authoritative AuditSummary from an effective list of findings
+ * while preserving repository-level scan statistics (filesAnalyzed, projectsCount).
+ */
+export function computeAuditSummary(
+  findings: readonly Finding[],
+  filesAnalyzed: number,
+  projectsCount: number
+): AuditSummary {
+  let errors = 0;
+  let warnings = 0;
+  let info = 0;
+  let highConfidence = 0;
+  let mediumConfidence = 0;
+  let lowConfidence = 0;
+
+  for (const f of findings) {
+    if (f.severity === "error") errors++;
+    else if (f.severity === "warning") warnings++;
+    else if (f.severity === "info") info++;
+
+    if (f.confidence === "high") highConfidence++;
+    else if (f.confidence === "medium") mediumConfidence++;
+    else if (f.confidence === "low") lowConfidence++;
+  }
+
+  return {
+    errors,
+    warnings,
+    info,
+    highConfidence,
+    mediumConfidence,
+    lowConfidence,
+    filesAnalyzed,
+    projectsCount,
   };
 }

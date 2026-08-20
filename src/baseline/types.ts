@@ -10,7 +10,7 @@ export interface BaselineEntry {
 export interface BaselineFile {
   readonly version: 1;
   readonly generatedAt: string;
-  readonly repositoryRoot: string;
+  readonly repositoryRoot?: string | undefined;
   readonly entries: readonly BaselineEntry[];
 }
 

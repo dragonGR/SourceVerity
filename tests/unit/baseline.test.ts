@@ -81,4 +81,65 @@ describe("baseline manager and delta comparator", () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+  test("newly created baseline contains no absolute machine path and uses portable root marker", () => {
+    const baseline = createBaseline([sampleFinding1, sampleFinding2], "/home/alex/Projects/my-app");
+    assert.equal(baseline.repositoryRoot, ".");
+    assert.ok(!baseline.entries.some((e) => e.file.startsWith("/")));
+    assert.ok(!baseline.entries.some((e) => e.file.includes("\\")));
+  });
+
+  test("baseline created in two different temporary directory roots is semantically equivalent", () => {
+    const findingInRootA: Finding = {
+      ...sampleFinding1,
+      file: "/tmp/rootA/src/api.ts",
+    };
+    const findingInRootB: Finding = {
+      ...sampleFinding1,
+      file: "/private/var/folders/rootB/src/api.ts",
+    };
+
+    const baselineA = createBaseline([findingInRootA], "/tmp/rootA");
+    const baselineB = createBaseline([findingInRootB], "/private/var/folders/rootB");
+
+    assert.equal(baselineA.repositoryRoot, ".");
+    assert.equal(baselineB.repositoryRoot, ".");
+    assert.equal(baselineA.entries.length, 1);
+    assert.equal(baselineB.entries.length, 1);
+    assert.equal(baselineA.entries[0]?.file, "src/api.ts");
+    assert.equal(baselineB.entries[0]?.file, "src/api.ts");
+    assert.equal(baselineA.entries[0]?.fingerprint, baselineB.entries[0]?.fingerprint);
+  });
+
+  test("legacy baseline with absolute repositoryRoot still loads and performs delta comparison", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "sv-legacy-baseline-"));
+    const legacyPath = path.join(tmpDir, ".sourceverity-baseline.json");
+
+    const legacyJson = JSON.stringify({
+      version: 1,
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      repositoryRoot: "/home/alex/legacy/machine/path",
+      entries: [
+        {
+          fingerprint: "sv_aaa111",
+          ruleId: "async/floating-promise",
+          file: "src/api.ts",
+          message: "Floating promise",
+        },
+      ],
+    });
+
+    try {
+      await fs.writeFile(legacyPath, legacyJson, "utf-8");
+      const loaded = await loadBaseline(legacyPath);
+      assert.ok(loaded !== null);
+      assert.equal(loaded.entries.length, 1);
+
+      const delta = compareWithBaseline([sampleFinding1], loaded);
+      assert.equal(delta.baselineCount, 1);
+      assert.equal(delta.newCount, 0);
+      assert.equal(delta.resolvedCount, 0);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

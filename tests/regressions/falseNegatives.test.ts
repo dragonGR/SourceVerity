@@ -5,6 +5,9 @@ import { derivedStateEffectRule } from "../../src/rules/react/derivedStateEffect
 import { floatingPromiseRule } from "../../src/rules/async/floatingPromise.js";
 import { unsafeUnvalidatedAssertionRule } from "../../src/rules/typescript/unsafeUnvalidatedAssertion.js";
 import { eventListenerCleanupRule } from "../../src/rules/browser/eventListenerCleanup.js";
+import { missingEffectCleanupRule } from "../../src/rules/react/missingEffectCleanup.js";
+import { fetchStatusUncheckedRule } from "../../src/rules/network/fetchStatusUnchecked.js";
+import { uncheckedIndexAccessRule } from "../../src/rules/typescript/uncheckedIndexAccess.js";
 import { runRuleOnCode } from "../rules/ruleTestUtils.js";
 
 describe("adversarial false-negative regression test suite", () => {
@@ -591,5 +594,159 @@ function Component() {
     `.trim();
     const findings = runRuleOnCode(eventListenerCleanupRule, code);
     assert.equal(findings.length, 0);
+  });
+
+  // ── Phase C Matrix: react/missing-effect-cleanup ───────────────────────────
+  test("phase C matrix: flags unsafe return 42 as missing cleanup", () => {
+    const code = `
+import { useEffect } from 'react';
+function LiveFeed() {
+  useEffect(() => {
+    const socket = new WebSocket('wss://example.com');
+    return 42;
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(missingEffectCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "react/missing-effect-cleanup");
+  });
+
+  test("phase C matrix: flags unsafe return socket as missing cleanup", () => {
+    const code = `
+import { useEffect } from 'react';
+function LiveFeed() {
+  useEffect(() => {
+    const socket = new WebSocket('wss://example.com');
+    return socket;
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(missingEffectCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "react/missing-effect-cleanup");
+  });
+
+  test("phase C matrix: flags unsafe return of variable containing number", () => {
+    const code = `
+import { useEffect } from 'react';
+function LiveFeed() {
+  useEffect(() => {
+    const socket = new WebSocket('wss://example.com');
+    const val = 123;
+    return val;
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(missingEffectCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "react/missing-effect-cleanup");
+  });
+
+  test("phase C matrix: lookalike cleanup function satisfies presence contract", () => {
+    const code = `
+import { useEffect } from 'react';
+function LiveFeed() {
+  useEffect(() => {
+    const socket = new WebSocket('wss://example.com');
+    function cleanup() {
+      console.log('unrelated action');
+    }
+    return cleanup;
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(missingEffectCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  // ── Phase C Matrix: network/fetch-status-unchecked ─────────────────────────
+  test("phase C matrix: flags when status check occurs AFTER body consumption", () => {
+    const code = `
+async function load(url: string) {
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error();
+  return data;
+}
+    `.trim();
+    const findings = runRuleOnCode(fetchStatusUncheckedRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "network/fetch-status-unchecked");
+  });
+
+  test("phase C matrix: flags when status property is read without conditional guard", () => {
+    const code = `
+async function load(url: string) {
+  const res = await fetch(url);
+  console.log(res.status);
+  return await res.json();
+}
+    `.trim();
+    const findings = runRuleOnCode(fetchStatusUncheckedRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "network/fetch-status-unchecked");
+  });
+
+  test("phase C matrix: flags when check guards a different response object", () => {
+    const code = `
+async function load(u1: string, u2: string) {
+  const r1 = await fetch(u1);
+  const r2 = await fetch(u2);
+  if (!r2.ok) throw new Error();
+  return await r1.json();
+}
+    `.trim();
+    const findings = runRuleOnCode(fetchStatusUncheckedRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "network/fetch-status-unchecked");
+  });
+
+  test("phase C matrix: flags when response variable is reassigned after status check", () => {
+    const code = `
+async function load(u1: string, u2: string) {
+  let res = await fetch(u1);
+  if (!res.ok) throw new Error();
+  res = await fetch(u2);
+  return await res.json();
+}
+    `.trim();
+    const findings = runRuleOnCode(fetchStatusUncheckedRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "network/fetch-status-unchecked");
+  });
+
+  // ── Phase C Matrix: typescript/unchecked-index-access ──────────────────────
+  test("phase C matrix: flags dynamic index access on fixed tuple", () => {
+    const code = `
+function testTuple(x: [string, number], i: number) {
+  console.log(x[i].toString());
+}
+    `.trim();
+    const findings = runRuleOnCode(uncheckedIndexAccessRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/unchecked-index-access");
+  });
+
+  test("phase C matrix: flags optional tuple element access without check", () => {
+    const code = `
+function testTuple(x: [string, number?]) {
+  console.log(x[1].toFixed());
+}
+    `.trim();
+    const findings = runRuleOnCode(uncheckedIndexAccessRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/unchecked-index-access");
+  });
+
+  test("phase C matrix: flags arbitrary rest element index on rest tuple", () => {
+    const code = `
+function testTuple(x: [string, ...number[]]) {
+  console.log(x[10].toFixed());
+}
+    `.trim();
+    const findings = runRuleOnCode(uncheckedIndexAccessRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/unchecked-index-access");
   });
 });

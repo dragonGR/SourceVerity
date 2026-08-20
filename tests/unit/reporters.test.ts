@@ -87,7 +87,7 @@ describe("reporters and output formatters", () => {
     assert.equal(parsed.findings[0].safeAutomaticFix, false);
   });
 
-  test("sarif report conforms to SARIF 2.1.0 log schema", () => {
+  test("sarif report conforms to SARIF 2.1.0 log schema and populates driver.rules from registry", () => {
     const sarifJson = renderSarifReport(sampleResult);
     const parsed = JSON.parse(sarifJson);
 
@@ -95,6 +95,16 @@ describe("reporters and output formatters", () => {
     assert.ok(Array.isArray(parsed.runs));
     assert.equal(parsed.runs[0].tool.driver.name, "sourceverity");
     assert.equal(parsed.runs[0].tool.driver.version, SOURCEVERITY_VERSION);
+    assert.ok(parsed.runs[0].tool.driver.rules.length > 0);
+
+    const sampleRuleMeta = parsed.runs[0].tool.driver.rules.find(
+      (r: { id: string }) => r.id === "typescript/unsafe-unvalidated-assertion"
+    );
+    assert.ok(sampleRuleMeta !== undefined);
+    assert.equal(sampleRuleMeta.name, "typescript/unsafe-unvalidated-assertion");
+    assert.ok(sampleRuleMeta.shortDescription.text.length > 0);
+    assert.equal(sampleRuleMeta.defaultConfiguration.level, "error");
+
     assert.equal(parsed.runs[0].results.length, 1);
     assert.equal(parsed.runs[0].results[0].ruleId, "typescript/unsafe-unvalidated-assertion");
     assert.equal(parsed.runs[0].results[0].level, "error");
@@ -102,6 +112,80 @@ describe("reporters and output formatters", () => {
     assert.equal(parsed.runs[0].results[0].locations[0].physicalLocation.region.startLine, 41);
   });
 
+  test("clean scan sarif report populates full driver.rules dictionary with empty results array", () => {
+    const cleanResult: AuditResult = {
+      findings: [],
+      summary: {
+        errors: 0,
+        warnings: 0,
+        info: 0,
+        highConfidence: 0,
+        mediumConfidence: 0,
+        lowConfidence: 0,
+        filesAnalyzed: 10,
+        projectsCount: 1,
+      },
+      repository: {
+        typescriptVersion: "5.9.3",
+        packageManager: "npm",
+        projectCount: 1,
+      },
+    };
+
+    const sarifJson = renderSarifReport(cleanResult);
+    const parsed = JSON.parse(sarifJson);
+
+    assert.equal(parsed.runs[0].results.length, 0);
+    assert.ok(parsed.runs[0].tool.driver.rules.length >= 12);
+    for (const rule of parsed.runs[0].tool.driver.rules) {
+      assert.ok(rule.id.length > 0);
+      assert.ok(rule.shortDescription.text.length > 0);
+      assert.ok(rule.defaultConfiguration.level === "error" || rule.defaultConfiguration.level === "warning" || rule.defaultConfiguration.level === "note");
+    }
+  });
+
+  test("reporters accurately reflect baseline-filtered summary and finding counts", () => {
+    const filteredResult: AuditResult = {
+      findings: [],
+      summary: {
+        errors: 0,
+        warnings: 0,
+        info: 0,
+        highConfidence: 0,
+        mediumConfidence: 0,
+        lowConfidence: 0,
+        filesAnalyzed: 48,
+        projectsCount: 1,
+      },
+      repository: {
+        typescriptVersion: "5.9.3",
+        packageManager: "npm",
+        projectCount: 1,
+      },
+    };
+
+    // 1. JSON
+    const json = JSON.parse(renderJsonReport(filteredResult));
+    assert.equal(json.findings.length, 0);
+    assert.equal(json.summary.errors, 0);
+    assert.equal(json.summary.warnings, 0);
+    assert.equal(json.summary.filesAnalyzed, 48);
+
+    // 2. Agent
+    const agent = JSON.parse(renderAgentReport(filteredResult));
+    assert.equal(agent.findings.length, 0);
+    assert.equal(agent.summary.errors, 0);
+    assert.equal(agent.summary.warnings, 0);
+
+    // 3. Terminal
+    const term = renderTerminalReport(filteredResult, { color: false });
+    assert.ok(term.includes("Analyzing 48 source files..."));
+    assert.ok(term.includes("0 high-confidence findings"));
+
+    // 4. SARIF
+    const sarif = JSON.parse(renderSarifReport(filteredResult));
+    assert.equal(sarif.runs[0].results.length, 0);
+  });
   test("reporters accurately format dynamically calibrated severities and confidence levels", () => {
     const calibratedResult: AuditResult = {
       findings: [
