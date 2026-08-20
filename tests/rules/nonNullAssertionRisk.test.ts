@@ -879,4 +879,364 @@ function processName(name: string) {
       const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
       assert.equal(findings.length, 1);
     });
+
+    // --- Fixed-length equality & comparison guard proofs and unsafe twins ---
+
+    test("does not flag arr[0]! and arr[1]! when guarded by arr.length === 2", () => {
+      const code = `
+  function processPair(arr: (string | undefined)[]) {
+    if (arr.length === 2) {
+      const a = arr[0]!;
+      const b = arr[1]!;
+      return [a, b];
+    }
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag arr[0]! and arr[1]! when guarded by arr.length >= 2", () => {
+      const code = `
+  function processPair(arr: (string | undefined)[]) {
+    if (arr.length >= 2) {
+      const a = arr[0]!;
+      const b = arr[1]!;
+      return [a, b];
+    }
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag arr[0]! when guarded by arr.length > 0", () => {
+      const code = `
+  function processFirst(arr: (string | undefined)[]) {
+    if (arr.length > 0) {
+      const a = arr[0]!;
+      return a;
+    }
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag sliceArgs[0]! and sliceArgs[1]! on NodeArray when guarded by length === 2", () => {
+      const code = `
+  interface NodeArray<T> extends ReadonlyArray<T> { readonly pos: number; }
+  declare const sliceArgs: NodeArray<{ text: string } | undefined>;
+  function checkArgs() {
+    if (sliceArgs.length === 2) {
+      const arg0 = sliceArgs[0]!;
+      const arg1 = sliceArgs[1]!;
+      return { arg0, arg1 };
+    }
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag arr[0]! and arr[1]! when guarded by dominating exit guard arr.length !== 2", () => {
+      const code = `
+  function processPair(arr: (string | undefined)[]) {
+    if (arr.length !== 2) return null;
+    const a = arr[0]!;
+    const b = arr[1]!;
+    return [a, b];
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag arr[0]! and arr[1]! when guarded by dominating exit guard arr.length < 2", () => {
+      const code = `
+  function processPair(arr: (string | undefined)[]) {
+    if (arr.length < 2) return null;
+    const a = arr[0]!;
+    const b = arr[1]!;
+    return [a, b];
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("near-miss: flags arr[2]! when guarded by arr.length === 2", () => {
+      const code = `
+  function processThird(arr: (string | undefined)[]) {
+    if (arr.length === 2) {
+      const c = arr[2]!;
+      return c;
+    }
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags arr[1]! when guarded by arr.length > 0", () => {
+      const code = `
+  function processSecond(arr: (string | undefined)[]) {
+    if (arr.length > 0) {
+      const b = arr[1]!;
+      return b;
+    }
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags arr[1]! when array is mutated (pop) after length === 2 guard", () => {
+      const code = `
+  function processMutated(arr: (string | undefined)[]) {
+    if (arr.length === 2) {
+      arr.pop();
+      const b = arr[1]!;
+      return b;
+    }
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags arr[1]! when condition && arr.length === 2 is not on dominating path", () => {
+      const code = `
+  function processNonDominating(arr: (string | undefined)[], condition: boolean) {
+    if (condition && arr.length === 2) {
+      console.log("valid");
+    }
+    const b = arr[1]!;
+    return b;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags arr[2]! when guarded by dominating exit guard arr.length !== 2", () => {
+      const code = `
+  function processPair(arr: (string | undefined)[]) {
+    if (arr.length !== 2) return null;
+    const c = arr[2]!;
+    return c;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    // --- Array.prototype.map/forEach 3rd-parameter receiver identity & unsafe twins ---
+
+    test("does not flag array[i + 1]! inside arr.map with 3rd param when guarded by if (i < array.length - 1)", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }, { val: 3 }];
+  function mapItems() {
+    return arr.map((item, i, array) => {
+      if (i < array.length - 1) {
+        return array[i + 1]!;
+      }
+      return null;
+    });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag array[i + 1]! inside arr.forEach with 3rd param when guarded by if (i < array.length - 1)", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }, { val: 3 }];
+  declare function use(item: { val: number }): void;
+  function forEachItems() {
+    arr.forEach((item, i, array) => {
+      if (i < array.length - 1) {
+        use(array[i + 1]!);
+      }
+    });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag array[i + 1]! inside arr.map with 3rd param when guarded by JSX logical AND (i < array.length - 1 && ...)", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }, { val: 3 }];
+  declare function render(item: { val: number }): string;
+  function renderItems() {
+    return arr.map((item, i, array) => (
+      i < array.length - 1 && render(array[i + 1]!)
+    ));
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag array[i + 1]! inside arr.map when guard references arr.length - 1", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }];
+  function mapItems() {
+    return arr.map((item, i, array) => {
+      if (i < arr.length - 1) {
+        return array[i + 1]!;
+      }
+      return null;
+    });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag arr[i + 1]! inside arr.map when guard references array.length - 1", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }];
+  function mapItems() {
+    return arr.map((item, i, array) => {
+      if (i < array.length - 1) {
+        return arr[i + 1]!;
+      }
+      return null;
+    });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag array[i]! (offset 0) inside arr.map with 3rd param array", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }];
+  function mapItems() {
+    return arr.map((item, i, array) => array[i]!);
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag array[index + 1]! inside array literal .map callback guarded by index < array.length - 1 (debtman pattern)", () => {
+      const code = `
+  function renderDiagram() {
+    return [
+      { key: 'a', x: 10 },
+      { key: 'b', x: 20 },
+      { key: 'c', x: 30 },
+    ].map((node, index, array) => (
+      index < array.length - 1 && array[index + 1]!.x
+    ));
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag array[i + 1]! inside arr.map when guarded by early exit if (i >= array.length - 1) return", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }];
+  function mapItems() {
+    return arr.map((item, i, array) => {
+      if (i >= array.length - 1) return null;
+      return array[i + 1]!;
+    });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("near-miss: flags other[i + 1]! inside arr.map with 3rd param array", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }];
+  const other: ({ val: number } | undefined)[] = [{ val: 10 }];
+  function mapItems() {
+    return arr.map((item, i, array) => {
+      if (i < array.length - 1) {
+        return other[i + 1]!;
+      }
+      return null;
+    });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags array[i + 1]! inside arr.map when unguarded", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }];
+  function mapItems() {
+    return arr.map((item, i, array) => array[i + 1]!);
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags array[i + 1]! inside arr.map when array is mutated (pop) before access", () => {
+      const code = `
+  const arr: ({ val: number } | undefined)[] = [{ val: 1 }, { val: 2 }];
+  function mapItems() {
+    return arr.map((item, i, array) => {
+      if (i < array.length - 1) {
+        array.pop();
+        return array[i + 1]!;
+      }
+      return null;
+    });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags customMap callback accessing array[i + 1]! (no Array.prototype semantics)", () => {
+      const code = `
+  declare function customMap<T, R>(fn: (item: T, i: number, array: (T | undefined)[]) => R): R[];
+  function mapCustom() {
+    return customMap((item: { val: number }, i, array) => {
+      if (i < array.length - 1) {
+        return array[i + 1]!;
+      }
+      return null;
+    });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags fake.map callback accessing array[i + 1]! (non-array object)", () => {
+      const code = `
+  const fake = {
+    map<R>(fn: (item: { val: number }, i: number, array: ({ val: number } | undefined)[]) => R): R[] {
+      return [];
+    }
+  };
+  function mapFake() {
+    return fake.map((item, i, array) => {
+      if (i < array.length - 1) {
+        return array[i + 1]!;
+      }
+      return null;
+    });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
 });

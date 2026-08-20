@@ -82,6 +82,24 @@ interface NormalizedArray {
   readonly symbol?: tsType.Symbol | undefined;
 }
 
+function arraysMatch(
+  a: NormalizedArray | undefined,
+  b: NormalizedArray | undefined
+): boolean {
+  if (!a || !b) return false;
+  if (a.symbol && b.symbol && a.symbol === b.symbol) return true;
+  return a.text === b.text;
+}
+
+function isNodeDescendantOf(child: tsType.Node, parent: tsType.Node): boolean {
+  let cur: tsType.Node | undefined = child;
+  while (cur) {
+    if (cur === parent) return true;
+    cur = cur.parent;
+  }
+  return false;
+}
+
 function normalizeArrayTarget(
   expr: tsType.Expression,
   ts: typeof tsType,
@@ -150,15 +168,17 @@ function isLowerBoundNegativeGuard(
  */
 function parseArrayLengthOffset(
   expr: tsType.Expression,
-  arrayInfo: NormalizedArray,
-  ts: typeof tsType
+  arrayInfo: NormalizedArray | readonly NormalizedArray[],
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
 ): number | undefined {
   const unwrapped = unwrapExpression(expr, ts);
+  const targets = Array.isArray(arrayInfo) ? arrayInfo : [arrayInfo];
 
   // array.length
   if (ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "length") {
-    const obj = unwrapExpression(unwrapped.expression, ts);
-    if (ts.isIdentifier(obj) && obj.text === arrayInfo.text) {
+    const objTarget = normalizeArrayTarget(unwrapped.expression, ts, checker);
+    if (objTarget && targets.some((t) => arraysMatch(objTarget, t))) {
       return 0;
     }
   }
@@ -168,8 +188,8 @@ function parseArrayLengthOffset(
     const left = unwrapExpression(unwrapped.left, ts);
     const right = unwrapExpression(unwrapped.right, ts);
     if (ts.isPropertyAccessExpression(left) && left.name.text === "length") {
-      const obj = unwrapExpression(left.expression, ts);
-      if (ts.isIdentifier(obj) && obj.text === arrayInfo.text && ts.isNumericLiteral(right)) {
+      const objTarget = normalizeArrayTarget(left.expression, ts, checker);
+      if (objTarget && targets.some((t) => arraysMatch(objTarget, t)) && ts.isNumericLiteral(right)) {
         const k = Number(right.text);
         if (!Number.isNaN(k)) return k;
       }
@@ -178,6 +198,169 @@ function parseArrayLengthOffset(
 
   return undefined;
 }
+
+function parseLengthPropertyTarget(
+  expr: tsType.Expression,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): NormalizedArray | undefined {
+  const unwrapped = unwrapExpression(expr, ts);
+  if (ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "length") {
+    return normalizeArrayTarget(unwrapped.expression, ts, checker);
+  }
+  return undefined;
+}
+
+interface GuardedLengthFact {
+  readonly minLength: number;
+  readonly exactLength?: number | undefined;
+}
+
+function parseGuardedLengthCondition(
+  expr: tsType.Expression,
+  arrayTarget: NormalizedArray,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): GuardedLengthFact | undefined {
+  const unwrapped = unwrapExpression(expr, ts);
+
+  if (ts.isBinaryExpression(unwrapped)) {
+    const op = unwrapped.operatorToken.kind;
+    const left = unwrapExpression(unwrapped.left, ts);
+    const right = unwrapExpression(unwrapped.right, ts);
+
+    // Conjunction: A && B
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) {
+      const leftFact = parseGuardedLengthCondition(unwrapped.left, arrayTarget, ts, checker);
+      const rightFact = parseGuardedLengthCondition(unwrapped.right, arrayTarget, ts, checker);
+      if (leftFact && rightFact) {
+        return {
+          minLength: Math.max(leftFact.minLength, rightFact.minLength),
+          exactLength: leftFact.exactLength ?? rightFact.exactLength,
+        };
+      }
+      return leftFact ?? rightFact;
+    }
+
+    const leftTarget = parseLengthPropertyTarget(left, ts, checker);
+    const rightTarget = parseLengthPropertyTarget(right, ts, checker);
+
+    // Left is arr.length, right is number literal
+    if (arraysMatch(leftTarget, arrayTarget) && ts.isNumericLiteral(right)) {
+      const num = Number(right.text);
+      if (Number.isInteger(num) && num >= 0) {
+        if (op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsToken) {
+          return { minLength: num, exactLength: num };
+        }
+        if (op === ts.SyntaxKind.GreaterThanEqualsToken) {
+          return { minLength: num };
+        }
+        if (op === ts.SyntaxKind.GreaterThanToken) {
+          return { minLength: num + 1 };
+        }
+      }
+    }
+
+    // Right is arr.length, left is number literal
+    if (arraysMatch(rightTarget, arrayTarget) && ts.isNumericLiteral(left)) {
+      const num = Number(left.text);
+      if (Number.isInteger(num) && num >= 0) {
+        if (op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsToken) {
+          return { minLength: num, exactLength: num };
+        }
+        if (op === ts.SyntaxKind.LessThanEqualsToken) {
+          return { minLength: num };
+        }
+        if (op === ts.SyntaxKind.LessThanToken) {
+          return { minLength: num + 1 };
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function parseExitGuardedLengthCondition(
+  expr: tsType.Expression,
+  arrayTarget: NormalizedArray,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): GuardedLengthFact | undefined {
+  const unwrapped = unwrapExpression(expr, ts);
+
+  // Disjunction: A || B
+  if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+    const leftFact = parseExitGuardedLengthCondition(unwrapped.left, arrayTarget, ts, checker);
+    const rightFact = parseExitGuardedLengthCondition(unwrapped.right, arrayTarget, ts, checker);
+    if (leftFact && rightFact) {
+      return {
+        minLength: Math.max(leftFact.minLength, rightFact.minLength),
+        exactLength: leftFact.exactLength ?? rightFact.exactLength,
+      };
+    }
+    return leftFact ?? rightFact;
+  }
+
+  // !arr.length or !arr
+  if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
+    const inner = unwrapExpression(unwrapped.operand, ts);
+    const target = parseLengthPropertyTarget(inner, ts, checker);
+    if (arraysMatch(target, arrayTarget)) {
+      return { minLength: 1 };
+    }
+  }
+
+  if (ts.isBinaryExpression(unwrapped)) {
+    const op = unwrapped.operatorToken.kind;
+    const left = unwrapExpression(unwrapped.left, ts);
+    const right = unwrapExpression(unwrapped.right, ts);
+
+    const leftTarget = parseLengthPropertyTarget(left, ts, checker);
+    const rightTarget = parseLengthPropertyTarget(right, ts, checker);
+
+    // Left is arr.length, right is number
+    if (arraysMatch(leftTarget, arrayTarget) && ts.isNumericLiteral(right)) {
+      const num = Number(right.text);
+      if (Number.isInteger(num) && num >= 0) {
+        if (op === ts.SyntaxKind.ExclamationEqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken) {
+          return { minLength: num, exactLength: num };
+        }
+        if (op === ts.SyntaxKind.LessThanToken) {
+          return { minLength: num };
+        }
+        if (op === ts.SyntaxKind.LessThanEqualsToken) {
+          return { minLength: num + 1 };
+        }
+        if ((op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsToken) && num === 0) {
+          return { minLength: 1 };
+        }
+      }
+    }
+
+    // Right is arr.length, left is number
+    if (arraysMatch(rightTarget, arrayTarget) && ts.isNumericLiteral(left)) {
+      const num = Number(left.text);
+      if (Number.isInteger(num) && num >= 0) {
+        if (op === ts.SyntaxKind.ExclamationEqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken) {
+          return { minLength: num, exactLength: num };
+        }
+        if (op === ts.SyntaxKind.GreaterThanToken) {
+          return { minLength: num };
+        }
+        if (op === ts.SyntaxKind.GreaterThanEqualsToken) {
+          return { minLength: num + 1 };
+        }
+        if ((op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsToken) && num === 0) {
+          return { minLength: 1 };
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
 
 /**
  * Checks if a binary condition expression guards an upper bound against array.length.
@@ -423,6 +606,249 @@ function isStaticArrayLiteralBoundedIndex(
 }
 
 /**
+ * Checks if a literal index access is proven in-bounds by a dominating fixed-length equality or comparison guard.
+ * e.g. `if (arr.length === 2) arr[0]!` or `if (arr.length >= 2) arr[1]!`
+ */
+function isFixedLengthGuardedIndex(
+  node: tsType.NonNullExpression,
+  operand: tsType.ElementAccessExpression,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): GuardCheckResult | undefined {
+  const arrayTarget = normalizeArrayTarget(operand.expression, ts, checker);
+  if (!arrayTarget) return undefined;
+
+  const indexExpr = unwrapExpression(operand.argumentExpression, ts);
+  if (!ts.isNumericLiteral(indexExpr)) return undefined;
+
+  const k = Number(indexExpr.text);
+  if (!Number.isInteger(k) || k < 0) return undefined;
+
+  // 1. Walk up enclosing AST nodes (if statements, && expressions, ternary expressions)
+  let curr: tsType.Node = node;
+  while (
+    curr.parent &&
+    !ts.isFunctionDeclaration(curr.parent) &&
+    !ts.isFunctionExpression(curr.parent) &&
+    !ts.isArrowFunction(curr.parent) &&
+    !ts.isSourceFile(curr.parent)
+  ) {
+    // Case A: Enclosing IfStatement
+    if (ts.isIfStatement(curr.parent)) {
+      const ifStmt = curr.parent;
+      if (
+        ifStmt.thenStatement === curr ||
+        (ts.isBlock(ifStmt.thenStatement) && ifStmt.thenStatement.statements.includes(curr as tsType.Statement)) ||
+        isNodeDescendantOf(curr, ifStmt.thenStatement)
+      ) {
+        const fact = parseGuardedLengthCondition(ifStmt.expression, arrayTarget, ts, checker);
+        if (fact) {
+          const maxAllowed = fact.exactLength ?? fact.minLength;
+          if (k < maxAllowed) {
+            if (!hasMutationBeforeNode(ifStmt.thenStatement, node, arrayTarget.text, ts, checker, arrayTarget.symbol)) {
+              return {
+                isGuarded: true,
+                evidence: `Enclosing guard '${ifStmt.expression.getText()}' proves '${arrayTarget.text}' has length ${fact.exactLength !== undefined ? `=== ${fact.exactLength}` : `>= ${fact.minLength}`}, establishing index ${k} is in-bounds.`,
+              };
+            }
+          }
+        }
+      } else if (
+        ifStmt.elseStatement &&
+        (ifStmt.elseStatement === curr ||
+          (ts.isBlock(ifStmt.elseStatement) && ifStmt.elseStatement.statements.includes(curr as tsType.Statement)) ||
+          isNodeDescendantOf(curr, ifStmt.elseStatement))
+      ) {
+        const fact = parseExitGuardedLengthCondition(ifStmt.expression, arrayTarget, ts, checker);
+        if (fact) {
+          const maxAllowed = fact.exactLength ?? fact.minLength;
+          if (k < maxAllowed) {
+            if (!hasMutationBeforeNode(ifStmt.elseStatement, node, arrayTarget.text, ts, checker, arrayTarget.symbol)) {
+              return {
+                isGuarded: true,
+                evidence: `Enclosing guard 'else' of '${ifStmt.expression.getText()}' proves '${arrayTarget.text}' has length ${fact.exactLength !== undefined ? `=== ${fact.exactLength}` : `>= ${fact.minLength}`}, establishing index ${k} is in-bounds.`,
+              };
+            }
+          }
+        }
+      }
+    }
+
+    // Case B: Logical AND expression: arr.length === 2 && arr[0]!
+    if (
+      ts.isBinaryExpression(curr.parent) &&
+      curr.parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+      (curr.parent.right === curr || isNodeDescendantOf(curr, curr.parent.right))
+    ) {
+      const fact = parseGuardedLengthCondition(curr.parent.left, arrayTarget, ts, checker);
+      if (fact) {
+        const maxAllowed = fact.exactLength ?? fact.minLength;
+        if (k < maxAllowed) {
+          if (!hasMutationBeforeNode(curr.parent.right, node, arrayTarget.text, ts, checker, arrayTarget.symbol)) {
+            return {
+              isGuarded: true,
+              evidence: `Logical AND guard '${curr.parent.left.getText()}' proves '${arrayTarget.text}' has length ${fact.exactLength !== undefined ? `=== ${fact.exactLength}` : `>= ${fact.minLength}`}, establishing index ${k} is in-bounds.`,
+            };
+          }
+        }
+      }
+    }
+
+    // Case C: ConditionalExpression: arr.length === 2 ? arr[0]! : fallback
+    if (ts.isConditionalExpression(curr.parent)) {
+      const condExpr = curr.parent;
+      if (condExpr.whenTrue === curr || isNodeDescendantOf(curr, condExpr.whenTrue)) {
+        const fact = parseGuardedLengthCondition(condExpr.condition, arrayTarget, ts, checker);
+        if (fact) {
+          const maxAllowed = fact.exactLength ?? fact.minLength;
+          if (k < maxAllowed) {
+            if (!hasMutationBeforeNode(condExpr.whenTrue, node, arrayTarget.text, ts, checker, arrayTarget.symbol)) {
+              return {
+                isGuarded: true,
+                evidence: `Ternary guard '${condExpr.condition.getText()}' proves '${arrayTarget.text}' has length ${fact.exactLength !== undefined ? `=== ${fact.exactLength}` : `>= ${fact.minLength}`}, establishing index ${k} is in-bounds.`,
+              };
+            }
+          }
+        }
+      } else if (condExpr.whenFalse === curr || isNodeDescendantOf(curr, condExpr.whenFalse)) {
+        const fact = parseExitGuardedLengthCondition(condExpr.condition, arrayTarget, ts, checker);
+        if (fact) {
+          const maxAllowed = fact.exactLength ?? fact.minLength;
+          if (k < maxAllowed) {
+            if (!hasMutationBeforeNode(condExpr.whenFalse, node, arrayTarget.text, ts, checker, arrayTarget.symbol)) {
+              return {
+                isGuarded: true,
+                evidence: `Ternary false branch of '${condExpr.condition.getText()}' proves '${arrayTarget.text}' has length ${fact.exactLength !== undefined ? `=== ${fact.exactLength}` : `>= ${fact.minLength}`}, establishing index ${k} is in-bounds.`,
+              };
+            }
+          }
+        }
+      }
+    }
+
+    curr = curr.parent;
+  }
+
+  // 2. Check dominating early-exit guards in prior sibling statements
+  let stmt: tsType.Node = node;
+  while (
+    stmt.parent &&
+    !ts.isBlock(stmt.parent) &&
+    !ts.isSourceFile(stmt.parent) &&
+    !ts.isCaseClause(stmt.parent) &&
+    !ts.isDefaultClause(stmt.parent)
+  ) {
+    stmt = stmt.parent;
+  }
+
+  const container = stmt.parent;
+  if (
+    container &&
+    (ts.isBlock(container) ||
+      ts.isSourceFile(container) ||
+      ts.isCaseClause(container) ||
+      ts.isDefaultClause(container))
+  ) {
+    const statements = container.statements;
+    const targetIndex = statements.indexOf(stmt as tsType.Statement);
+
+    if (targetIndex > 0) {
+      for (let i = 0; i < targetIndex; i++) {
+        const prior = statements[i];
+        if (!prior) continue;
+
+        if (ts.isIfStatement(prior) && statementExitsControlFlow(prior.thenStatement, ts)) {
+          const fact = parseExitGuardedLengthCondition(prior.expression, arrayTarget, ts, checker);
+          if (fact) {
+            const maxAllowed = fact.exactLength ?? fact.minLength;
+            if (k < maxAllowed) {
+              let hasInterveningMutation = false;
+              for (let m = i + 1; m < targetIndex; m++) {
+                const s = statements[m];
+                if (s && hasArrayMutation(s, arrayTarget.text, ts, checker, arrayTarget.symbol)) {
+                  hasInterveningMutation = true;
+                  break;
+                }
+              }
+              if (
+                !hasInterveningMutation &&
+                !hasMutationBeforeNode(stmt, node, arrayTarget.text, ts, checker, arrayTarget.symbol)
+              ) {
+                return {
+                  isGuarded: true,
+                  evidence: `Dominating guard '${prior.expression.getText()}' proves '${arrayTarget.text}' has length ${fact.exactLength !== undefined ? `=== ${fact.exactLength}` : `>= ${fact.minLength}`}, establishing index ${k} is in-bounds.`,
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Checks if a call expression is a genuine Array.prototype method call (e.g. map or forEach).
+ */
+function isBuiltinArrayMethodCall(
+  call: tsType.CallExpression,
+  methodName: "map" | "forEach",
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): boolean {
+  if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== methodName) {
+    return false;
+  }
+
+  const callerExpr = unwrapExpression(call.expression.expression, ts);
+
+  // Array literals: [1, 2].map(...)
+  if (ts.isArrayLiteralExpression(callerExpr)) {
+    return true;
+  }
+
+  if (checker) {
+    const callerType = checker.getTypeAtLocation(callerExpr);
+    if (checker.isArrayType(callerType) || checker.isTupleType(callerType)) {
+      return true;
+    }
+
+    const methodSym = checker.getSymbolAtLocation(call.expression);
+    if (methodSym) {
+      const decls = methodSym.getDeclarations();
+      if (decls && decls.length > 0) {
+        for (const d of decls) {
+          const sf = d.getSourceFile();
+          if (
+            sf.isDeclarationFile &&
+            (sf.fileName.includes("lib.es") ||
+              sf.fileName.includes("lib.core") ||
+              sf.fileName.includes("lib.d.ts") ||
+              sf.fileName.includes("typescript/lib"))
+          ) {
+            const parentName = d.parent && ts.isInterfaceDeclaration(d.parent) ? d.parent.name.text : undefined;
+            if (
+              parentName === "Array" ||
+              parentName === "ReadonlyArray" ||
+              parentName === "ConcatArray" ||
+              parentName?.includes("Array")
+            ) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  return false;
+}
+
+/**
  * Checks if an element access index is bounded by an enclosing for-loop or array iteration callback.
  */
 function isLoopOrCallbackBoundedIndex(
@@ -554,118 +980,229 @@ function isLoopOrCallbackBoundedIndex(
       if (ts.isPropertyAccessExpression(call.expression)) {
         const method = call.expression.name.text;
         if (method === "map" || method === "forEach") {
-          const callback = curr.parent as tsType.ArrowFunction | tsType.FunctionExpression;
-          const indexParam = callback.parameters[1];
+          if (isBuiltinArrayMethodCall(call, method, ts, checker)) {
+            const callback = curr.parent as tsType.ArrowFunction | tsType.FunctionExpression;
+            const indexParam = callback.parameters[1];
+            const arrayParam = callback.parameters[2];
 
-          if (indexParam && ts.isIdentifier(indexParam.name) && indexParam.name.text === indexInfo.baseText) {
-            const callerExpr = call.expression.expression;
+            if (indexParam && ts.isIdentifier(indexParam.name) && indexParam.name.text === indexInfo.baseText) {
+              const callerExpr = call.expression.expression;
+              const directCallerArr = normalizeArrayTarget(callerExpr, ts, checker);
+              const arrayParamTarget =
+                arrayParam && ts.isIdentifier(arrayParam.name)
+                  ? normalizeArrayTarget(arrayParam.name, ts, checker)
+                  : undefined;
 
-            // Sub-case 2a: Direct caller array: arr.map((_, i) => arr[i]!)
-            const directCallerArr = normalizeArrayTarget(callerExpr, ts, checker);
-            if (directCallerArr && directCallerArr.text === arrayTarget.text) {
-              if (indexInfo.offset === 0) {
-                return {
-                  isGuarded: true,
-                  evidence: `Index '${indexInfo.baseText}' is callback index parameter for '${directCallerArr.text}.${method}'.`,
-                };
-              }
+              const collectionTargets: NormalizedArray[] = [];
+              if (directCallerArr) collectionTargets.push(directCallerArr);
+              if (arrayParamTarget) collectionTargets.push(arrayParamTarget);
 
-              // Check if inside callback there is an enclosing guard:
-              // e.g. if (i < arr.length - K) or {i < arr.length - K && <JSX />}
-              let innerNode: tsType.Node = node;
-              while (innerNode && innerNode !== callback) {
-                // Form 1: if (i < arr.length - K)
-                if (innerNode.parent && ts.isIfStatement(innerNode.parent)) {
-                  if (
-                    innerNode.parent.thenStatement === innerNode ||
-                    (ts.isBlock(innerNode.parent.thenStatement) &&
-                      innerNode.parent.thenStatement.statements.includes(innerNode as tsType.Statement))
-                  ) {
-                    const ifCond = innerNode.parent.expression;
-                    const unwrappedCond = unwrapExpression(ifCond, ts);
-                    if (ts.isBinaryExpression(unwrappedCond)) {
-                      const condLeft = unwrapExpression(unwrappedCond.left, ts);
-                      const condRight = unwrapExpression(unwrappedCond.right, ts);
-                      const condOp = unwrappedCond.operatorToken.kind;
-                      if (ts.isIdentifier(condLeft) && condLeft.text === indexInfo.baseText) {
-                        if (condOp === ts.SyntaxKind.LessThanToken) {
-                          const lengthMinus = parseArrayLengthOffset(condRight, arrayTarget, ts);
-                          if (lengthMinus !== undefined && indexInfo.offset >= 0 && indexInfo.offset <= lengthMinus) {
-                            return {
-                              isGuarded: true,
-                              evidence: `Callback index '${indexInfo.baseText}' is guarded non-negative and bounded by '${innerNode.parent.expression.getText()}'.`,
-                            };
+              const isIteratedCollectionAccess = collectionTargets.some((t) => arraysMatch(arrayTarget, t));
+
+              if (isIteratedCollectionAccess) {
+                // Check if any mutation occurred before node in the callback
+                let hasMutation = false;
+                for (const target of collectionTargets) {
+                  if (hasMutationBeforeNode(callback, node, target.text, ts, checker, target.symbol)) {
+                    hasMutation = true;
+                    break;
+                  }
+                }
+
+                if (!hasMutation) {
+                  // Sub-case 2a: Direct index access (offset 0): arr[i]! or array[i]!
+                  if (indexInfo.offset === 0) {
+                    const targetName =
+                      arrayParamTarget && arraysMatch(arrayTarget, arrayParamTarget)
+                        ? arrayParamTarget.text
+                        : directCallerArr
+                        ? directCallerArr.text
+                        : arrayTarget.text;
+                    return {
+                      isGuarded: true,
+                      evidence: `Index '${indexInfo.baseText}' is callback index parameter for '${directCallerArr ? directCallerArr.text : targetName}.${method}'.`,
+                    };
+                  }
+
+                  // Sub-case 2b: Offset > 0 e.g. array[i + 1]! or arr[i + 1]!
+                  // Check if inside callback there is an enclosing guard or dominating exit guard
+                  let innerNode: tsType.Node = node;
+                  while (innerNode && innerNode !== callback) {
+                    // Form 1: if (i < arr.length - K) or if (i < array.length - K)
+                    if (innerNode.parent && ts.isIfStatement(innerNode.parent)) {
+                      if (
+                        innerNode.parent.thenStatement === innerNode ||
+                        (ts.isBlock(innerNode.parent.thenStatement) &&
+                          innerNode.parent.thenStatement.statements.includes(innerNode as tsType.Statement)) ||
+                        isNodeDescendantOf(innerNode, innerNode.parent.thenStatement)
+                      ) {
+                        const ifCond = innerNode.parent.expression;
+                        const unwrappedCond = unwrapExpression(ifCond, ts);
+                        if (ts.isBinaryExpression(unwrappedCond)) {
+                          const condLeft = unwrapExpression(unwrappedCond.left, ts);
+                          const condRight = unwrapExpression(unwrappedCond.right, ts);
+                          const condOp = unwrappedCond.operatorToken.kind;
+                          if (ts.isIdentifier(condLeft) && condLeft.text === indexInfo.baseText) {
+                            if (condOp === ts.SyntaxKind.LessThanToken) {
+                              const lengthMinus = parseArrayLengthOffset(condRight, collectionTargets, ts, checker);
+                              if (lengthMinus !== undefined && indexInfo.offset >= 0 && indexInfo.offset <= lengthMinus) {
+                                return {
+                                  isGuarded: true,
+                                  evidence: `Callback index '${indexInfo.baseText}' is guarded non-negative and bounded by '${innerNode.parent.expression.getText()}'.`,
+                                };
+                              }
+                            }
+                            if (condOp === ts.SyntaxKind.LessThanEqualsToken) {
+                              const lengthMinus = parseArrayLengthOffset(condRight, collectionTargets, ts, checker);
+                              if (
+                                lengthMinus !== undefined &&
+                                lengthMinus >= 1 &&
+                                indexInfo.offset >= 0 &&
+                                indexInfo.offset <= lengthMinus - 1
+                              ) {
+                                return {
+                                  isGuarded: true,
+                                  evidence: `Callback index '${indexInfo.baseText}' is guarded non-negative and bounded by '${innerNode.parent.expression.getText()}'.`,
+                                };
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    // Form 2: JSX logical AND expression: {i < array.length - K && <Element ... />}
+                    if (
+                      innerNode.parent &&
+                      ts.isBinaryExpression(innerNode.parent) &&
+                      innerNode.parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+                    ) {
+                      let checkLeft: tsType.Node = innerNode;
+                      while (
+                        checkLeft.parent &&
+                        ts.isBinaryExpression(checkLeft.parent) &&
+                        checkLeft.parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+                        checkLeft.parent.right === checkLeft
+                      ) {
+                        const condLeft = unwrapExpression(checkLeft.parent.left, ts);
+                        if (ts.isBinaryExpression(condLeft)) {
+                          const cLeft = unwrapExpression(condLeft.left, ts);
+                          const cRight = unwrapExpression(condLeft.right, ts);
+                          const cOp = condLeft.operatorToken.kind;
+                          if (ts.isIdentifier(cLeft) && cLeft.text === indexInfo.baseText) {
+                            if (cOp === ts.SyntaxKind.LessThanToken) {
+                              const lengthMinus = parseArrayLengthOffset(cRight, collectionTargets, ts, checker);
+                              if (lengthMinus !== undefined && indexInfo.offset >= 0 && indexInfo.offset <= lengthMinus) {
+                                return {
+                                  isGuarded: true,
+                                  evidence: `Callback index '${indexInfo.baseText}' is guarded non-negative and bounded by '${condLeft.getText()}'.`,
+                                };
+                              }
+                            }
+                            if (cOp === ts.SyntaxKind.LessThanEqualsToken) {
+                              const lengthMinus = parseArrayLengthOffset(cRight, collectionTargets, ts, checker);
+                              if (
+                                lengthMinus !== undefined &&
+                                lengthMinus >= 1 &&
+                                indexInfo.offset >= 0 &&
+                                indexInfo.offset <= lengthMinus - 1
+                              ) {
+                                return {
+                                  isGuarded: true,
+                                  evidence: `Callback index '${indexInfo.baseText}' is guarded non-negative and bounded by '${condLeft.getText()}'.`,
+                                };
+                              }
+                            }
+                          }
+                        }
+                        checkLeft = checkLeft.parent;
+                      }
+                    }
+
+                    innerNode = innerNode.parent;
+                  }
+
+                  // Form 3: Dominating exit guard in statements of callback body
+                  if (ts.isBlock(callback.body)) {
+                    let stmtNode: tsType.Node = node;
+                    while (stmtNode.parent && stmtNode.parent !== callback.body) {
+                      stmtNode = stmtNode.parent;
+                    }
+                    const cbStmts = callback.body.statements;
+                    const targetIdx = cbStmts.indexOf(stmtNode as tsType.Statement);
+                    if (targetIdx > 0) {
+                      for (let s = 0; s < targetIdx; s++) {
+                        const prior = cbStmts[s];
+                        if (prior && ts.isIfStatement(prior) && statementExitsControlFlow(prior.thenStatement, ts)) {
+                          const unwrappedCond = unwrapExpression(prior.expression, ts);
+                          if (ts.isBinaryExpression(unwrappedCond)) {
+                            const cLeft = unwrapExpression(unwrappedCond.left, ts);
+                            const cRight = unwrapExpression(unwrappedCond.right, ts);
+                            const cOp = unwrappedCond.operatorToken.kind;
+                            if (ts.isIdentifier(cLeft) && cLeft.text === indexInfo.baseText) {
+                              if (cOp === ts.SyntaxKind.GreaterThanEqualsToken) {
+                                const lengthMinus = parseArrayLengthOffset(cRight, collectionTargets, ts, checker);
+                                if (lengthMinus !== undefined && indexInfo.offset >= 0 && indexInfo.offset <= lengthMinus) {
+                                  return {
+                                    isGuarded: true,
+                                    evidence: `Callback index '${indexInfo.baseText}' is guarded non-negative and bounded by exit guard '${prior.expression.getText()}'.`,
+                                  };
+                                }
+                              }
+                              if (cOp === ts.SyntaxKind.GreaterThanToken) {
+                                const lengthMinus = parseArrayLengthOffset(cRight, collectionTargets, ts, checker);
+                                if (
+                                  lengthMinus !== undefined &&
+                                  lengthMinus >= 1 &&
+                                  indexInfo.offset >= 0 &&
+                                  indexInfo.offset <= lengthMinus - 1
+                                ) {
+                                  return {
+                                    isGuarded: true,
+                                    evidence: `Callback index '${indexInfo.baseText}' is guarded non-negative and bounded by exit guard '${prior.expression.getText()}'.`,
+                                  };
+                                }
+                              }
+                            }
                           }
                         }
                       }
                     }
                   }
                 }
+              }
+              // Sub-case 2c: Sliced caller array: arr.slice(0, -K).map((_, i) => arr[i + offset]!)
+              if (ts.isCallExpression(callerExpr) && ts.isPropertyAccessExpression(callerExpr.expression)) {
+                const sliceMethod = callerExpr.expression.name.text;
+                if (sliceMethod === "slice") {
+                  const sliceReceiver = normalizeArrayTarget(callerExpr.expression.expression, ts, checker);
+                  if (sliceReceiver && arraysMatch(sliceReceiver, arrayTarget)) {
+                    const sliceArgs = callerExpr.arguments;
+                    let startZero = false;
+                    let endMinusK: number | undefined;
 
-                // Form 2: JSX logical AND expression: {i < arr.length - K && <Element ... />}
-                if (
-                  innerNode.parent &&
-                  ts.isBinaryExpression(innerNode.parent) &&
-                  innerNode.parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
-                ) {
-                  let checkLeft: tsType.Node = innerNode;
-                  while (
-                    checkLeft.parent &&
-                    ts.isBinaryExpression(checkLeft.parent) &&
-                    checkLeft.parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
-                    checkLeft.parent.right === checkLeft
-                  ) {
-                    const condLeft = unwrapExpression(checkLeft.parent.left, ts);
-                    if (ts.isBinaryExpression(condLeft)) {
-                      const cLeft = unwrapExpression(condLeft.left, ts);
-                      const cRight = unwrapExpression(condLeft.right, ts);
-                      const cOp = condLeft.operatorToken.kind;
-                      if (ts.isIdentifier(cLeft) && cLeft.text === indexInfo.baseText) {
-                        if (cOp === ts.SyntaxKind.LessThanToken) {
-                          const lengthMinus = parseArrayLengthOffset(cRight, arrayTarget, ts);
-                          if (lengthMinus !== undefined && indexInfo.offset >= 0 && indexInfo.offset <= lengthMinus) {
-                            return {
-                              isGuarded: true,
-                              evidence: `Callback index '${indexInfo.baseText}' is guarded non-negative and bounded by '${condLeft.getText()}'.`,
-                            };
-                          }
-                        }
+                    if (sliceArgs.length === 2) {
+                      const arg0 = unwrapExpression(sliceArgs[0]!, ts);
+                      const arg1 = unwrapExpression(sliceArgs[1]!, ts);
+                      if (ts.isNumericLiteral(arg0) && arg0.text === "0") {
+                        startZero = true;
+                      }
+                      if (
+                        ts.isPrefixUnaryExpression(arg1) &&
+                        arg1.operator === ts.SyntaxKind.MinusToken &&
+                        ts.isNumericLiteral(arg1.operand)
+                      ) {
+                        endMinusK = Number(arg1.operand.text);
                       }
                     }
-                    checkLeft = checkLeft.parent;
-                  }
-                }
 
-                innerNode = innerNode.parent;
-              }
-            }
-            // Sub-case 2b: Sliced caller array: arr.slice(0, -K).map((_, i) => arr[i + offset]!)
-            if (ts.isCallExpression(callerExpr) && ts.isPropertyAccessExpression(callerExpr.expression)) {
-              const sliceMethod = callerExpr.expression.name.text;
-              if (sliceMethod === "slice") {
-                const sliceReceiver = normalizeArrayTarget(callerExpr.expression.expression, ts, checker);
-                if (sliceReceiver && sliceReceiver.text === arrayTarget.text) {
-                  const sliceArgs = callerExpr.arguments;
-                  let startZero = false;
-                  let endMinusK: number | undefined;
-
-                  if (sliceArgs.length === 2) {
-                    const arg0 = unwrapExpression(sliceArgs[0]!, ts);
-                    const arg1 = unwrapExpression(sliceArgs[1]!, ts);
-                    if (ts.isNumericLiteral(arg0) && arg0.text === "0") {
-                      startZero = true;
-                    }
-                    if (ts.isPrefixUnaryExpression(arg1) && arg1.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(arg1.operand)) {
-                      endMinusK = Number(arg1.operand.text);
-                    }
-                  }
-
-                  if (startZero && endMinusK !== undefined && endMinusK >= 1) {
-                    if (indexInfo.offset >= 0 && indexInfo.offset <= endMinusK) {
-                      return {
-                        isGuarded: true,
-                        evidence: `Index '${indexInfo.baseText} + ${indexInfo.offset}' is bounded by '${sliceReceiver.text}.slice(0, -${endMinusK})' callback index bounds.`,
-                      };
+                    if (startZero && endMinusK !== undefined && endMinusK >= 1) {
+                      if (indexInfo.offset >= 0 && indexInfo.offset <= endMinusK) {
+                        return {
+                          isGuarded: true,
+                          evidence: `Index '${indexInfo.baseText} + ${indexInfo.offset}' is bounded by '${sliceReceiver.text}.slice(0, -${endMinusK})' callback index bounds.`,
+                        };
+                      }
                     }
                   }
                 }
@@ -681,6 +1218,7 @@ function isLoopOrCallbackBoundedIndex(
 
   return undefined;
 }
+
 
 /**
  * Checks if an element access index is the result of array.findIndex() proven non-negative by dominating guard.
@@ -924,7 +1462,8 @@ function hasArrayMutation(
           method === "push" ||
           method === "fill" ||
           method === "reverse" ||
-          method === "sort"
+          method === "sort" ||
+          method === "copyWithin"
         ) {
           mutated = true;
           return;
@@ -942,6 +1481,10 @@ function hasArrayMutation(
         }
       }
       if (ts.isIdentifier(left) && left.text === arrayText) {
+        mutated = true;
+        return;
+      }
+      if (ts.isPropertyAccessExpression(left) && left.getText() === arrayText) {
         mutated = true;
         return;
       }
@@ -1050,11 +1593,31 @@ function hasMutationBeforeNode(
           method === "push" ||
           method === "fill" ||
           method === "reverse" ||
-          method === "sort"
+          method === "sort" ||
+          method === "copyWithin"
         ) {
           mutatedBefore = true;
           return;
         }
+      }
+    }
+    // a.length = ... or a = ...
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const left = unwrapExpression(n.left, ts);
+      if (ts.isPropertyAccessExpression(left) && left.name.text === "length") {
+        const target = normalizeArrayTarget(left.expression, ts, checker);
+        if (target && (target.text === arrayText || (arraySymbol && target.symbol === arraySymbol))) {
+          mutatedBefore = true;
+          return;
+        }
+      }
+      if (ts.isIdentifier(left) && left.text === arrayText) {
+        mutatedBefore = true;
+        return;
+      }
+      if (ts.isPropertyAccessExpression(left) && left.getText() === arrayText) {
+        mutatedBefore = true;
+        return;
       }
     }
     n.forEachChild(check);
@@ -1780,13 +2343,19 @@ export function isGuardedNonNullAssertion(
       return staticLiteralCheck;
     }
 
-    // 1b. Check constructed array cardinality: e.g. amplitudes[numLayers]! or coeffs[0]!
+    // 1b. Check fixed-length equality or comparison guards: e.g. if (sliceArgs.length === 2) sliceArgs[0]!
+    const fixedLengthCheck = isFixedLengthGuardedIndex(node, operand, ts, checker);
+    if (fixedLengthCheck?.isGuarded) {
+      return fixedLengthCheck;
+    }
+
+    // 1c. Check constructed array cardinality: e.g. amplitudes[numLayers]! or coeffs[0]!
     const cardinalityCheck = isConstructedArrayCardinalityBoundedIndex(node, operand, ts, checker);
     if (cardinalityCheck?.isGuarded) {
       return cardinalityCheck;
     }
 
-    // 1c. Check loop or callback bounds: e.g. for (let i = 0; i < arr.length; i++) arr[i]!
+    // 1d. Check loop or callback bounds: e.g. for (let i = 0; i < arr.length; i++) arr[i]!
     const loopCheck = isLoopOrCallbackBoundedIndex(node, operand, ts, checker);
     if (loopCheck?.isGuarded) {
       return loopCheck;
