@@ -1,6 +1,6 @@
 {
   "name": "sourceverity",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Repository-aware frontend correctness and quality auditor",
   "type": "module",
   "main": "./dist/index.js",

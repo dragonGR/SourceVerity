@@ -79,3 +79,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Verified SourceVerity self-analysis completes with zero findings.
 - Preserved the single-Program / single-TypeChecker analysis architecture without introducing additional runtime dependencies.
 
+## [1.0.3] - 2026-08-22
+
+### Fixed
+- Hardened Promise flow analysis around alias overwrites, synchronous rejection paths, and framework-specific async contracts.
+- Fixed control-flow proofs for nullable value reassignment, array slice cardinality, React state bounds, and additional bounded-index patterns.
+- Tightened React hook identity resolution to prevent locally shadowed hooks and unrelated React hooks from inheriting lifecycle semantics.
+- Improved React Router `NavigateFunction` alias recognition while preserving local lookalike detection.
+- Restricted `Response.json()` runtime-boundary detection to verified response origins.
+- Fixed `react/missing-effect-cleanup` to require a callable cleanup function.
+- Made `network/fetch-status-unchecked` respect status-check ordering, dominance, response identity, and reassignment.
+- Added fixed-length tuple precision to `typescript/unchecked-index-access`.
+- Fixed baseline-filtered summary consistency across all reporters.
+- Removed machine-specific repository paths from newly generated baselines while preserving legacy compatibility.
+- Deduplicated identical findings emitted by overlapping TypeScript projects.
+- Improved SARIF rule metadata and clean-scan output.
+
+### Improved
+- Reduced duplicated AST/control-flow analysis in fetch status checking by reusing shared semantic helpers.
+- Expanded adversarial and false-negative regression coverage across Promise flow, React lifecycle analysis, bounds reasoning, network analysis, baselines, and monorepos.
+- Improved semantic precision without changing the existing 12 rule IDs or CLI behavior.
