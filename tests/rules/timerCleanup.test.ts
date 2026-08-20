@@ -204,4 +204,149 @@ function LayoutComponent() {
       "A pending timeout may fire after the component has unmounted and execute stale lifecycle work."
     );
   });
+
+  test("does not flag collection of timers cleared with forEach(clearTimeout)", () => {
+    const code = `
+import { useEffect } from 'react';
+
+function BootComponent() {
+  useEffect(() => {
+    const timers = [];
+    timers.push(setTimeout(() => console.log('1'), 100));
+    timers.push(setTimeout(() => console.log('2'), 200));
+    return () => timers.forEach(clearTimeout);
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag timers in for...of loop cleanup", () => {
+    const code = `
+import { useEffect } from 'react';
+
+function BootComponent() {
+  useEffect(() => {
+    const timers = [];
+    timers.push(setTimeout(() => console.log('1'), 100));
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag timers in forEach arrow callback cleanup", () => {
+    const code = `
+import { useEffect } from 'react';
+
+function BootComponent() {
+  useEffect(() => {
+    const timers = [];
+    timers.push(setTimeout(() => console.log('1'), 100));
+    return () => timers.forEach((timer) => clearTimeout(timer));
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag timers in forEach block callback cleanup", () => {
+    const code = `
+import { useEffect } from 'react';
+
+function BootComponent() {
+  useEffect(() => {
+    const timers = [];
+    timers.push(setTimeout(() => console.log('1'), 100));
+    return () => {
+      timers.forEach((id) => {
+        clearTimeout(id);
+      });
+    };
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("near-miss: flags timers when otherTimers is cleared instead", () => {
+    const code = `
+import { useEffect } from 'react';
+
+function BootComponent() {
+  useEffect(() => {
+    const timers = [];
+    const otherTimers = [];
+    timers.push(setTimeout(() => console.log('1'), 100));
+    return () => otherTimers.forEach(clearTimeout);
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 1);
+  });
+
+  test("near-miss: flags timeouts when cleared with clearInterval", () => {
+    const code = `
+import { useEffect } from 'react';
+
+function BootComponent() {
+  useEffect(() => {
+    const timers = [];
+    timers.push(setTimeout(() => console.log('1'), 100));
+    return () => timers.forEach(clearInterval);
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 1);
+  });
+
+  test("near-miss: flags timeouts when forEach calls unrelated logger", () => {
+    const code = `
+import { useEffect } from 'react';
+
+function BootComponent() {
+  useEffect(() => {
+    const timers = [];
+    timers.push(setTimeout(() => console.log('1'), 100));
+    return () => timers.forEach(console.log);
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 1);
+  });
+
+  test("near-miss: flags timers when non-timer value is pushed to the collection", () => {
+    const code = `
+import { useEffect } from 'react';
+
+function BootComponent() {
+  useEffect(() => {
+    const timers = [];
+    timers.push(setTimeout(() => console.log('1'), 100));
+    timers.push("not-a-timer");
+    return () => timers.forEach(clearTimeout);
+  }, []);
+}
+    `.trim();
+
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 1);
+  });
 });

@@ -222,6 +222,67 @@ export function evaluateFrameworkPromiseCall(
         };
       }
     }
+    if (
+      fileName.includes("node:test") ||
+      fileName.includes("@types/node/test.d.ts") ||
+      fileName.includes("node/test.d.ts") ||
+      fileName.endsWith("/node_modules/@types/node/test.d.ts")
+    ) {
+      if (
+        methodName === "test" ||
+        methodName === "describe" ||
+        methodName === "it" ||
+        methodName === "suite" ||
+        methodName === "before" ||
+        methodName === "after" ||
+        methodName === "beforeEach" ||
+        methodName === "afterEach" ||
+        methodName === "only" ||
+        methodName === "skip" ||
+        methodName === "todo" ||
+        targetSymbol.name === "test" ||
+        targetSymbol.name === "describe" ||
+        targetSymbol.name === "suite" ||
+        targetSymbol.name === "it" ||
+        targetSymbol.name === "TestFn" ||
+        targetSymbol.name === "SuiteFn"
+      ) {
+        return {
+          isHandled: true,
+          reason: "Node test runner registration API executes test suite lifecycles without unhandled floating promise risk.",
+        };
+      }
+    }
+
+    // 6. Anime.js: animate, createTimer, JSAnimation, Timer, Timeline
+    if (
+      fileName.includes("animejs/") ||
+      fileName.includes("node_modules/animejs/")
+    ) {
+      if (
+        methodName === "animate" ||
+        methodName === "createTimer" ||
+        methodName === "createTimeline" ||
+        methodName === "play" ||
+        methodName === "pause" ||
+        methodName === "restart" ||
+        methodName === "revert" ||
+        methodName === "seek" ||
+        methodName === "cancel" ||
+        methodName === "refresh" ||
+        methodName === "stretch" ||
+        targetSymbol.name === "animate" ||
+        targetSymbol.name === "createTimer" ||
+        targetSymbol.name === "JSAnimation" ||
+        targetSymbol.name === "Timer" ||
+        targetSymbol.name === "Timeline"
+      ) {
+        return {
+          isHandled: true,
+          reason: "Anime.js animation controller thenable handles lifecycle and completion internally without unhandled rejection.",
+        };
+      }
+    }
   }
 
   return { isHandled: false };

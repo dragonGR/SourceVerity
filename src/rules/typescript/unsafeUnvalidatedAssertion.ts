@@ -84,24 +84,58 @@ export const unsafeUnvalidatedAssertionRule: Rule = {
       }
 
       if (isRuntimeBoundary) {
+        let isInsideTryCatch = false;
+        let curr: tsType.Node = node;
+        while (curr.parent && !ts.isSourceFile(curr.parent)) {
+          if (ts.isTryStatement(curr.parent) && curr.parent.tryBlock === curr) {
+            if (curr.parent.catchClause) {
+              isInsideTryCatch = true;
+              break;
+            }
+          }
+          curr = curr.parent;
+        }
+
         const range = getNodeSourceRange(node, sourceFile);
-        context.report({
-          ruleId: "typescript/unsafe-unvalidated-assertion",
-          category: "typescript",
-          severity: "error",
-          confidence: "high",
-          message: `Runtime boundary data from ${boundaryName} is asserted to type without runtime validation.`,
-          file: sourceFile.fileName,
-          range,
-          evidence: [
-            {
-              message: "Type assertions bypass compiler checking without verifying that runtime structure satisfies the target type.",
-              range,
-            },
-          ],
-          suggestedAction: "Validate payload with a runtime schema validator before asserting or casting.",
-          safeAutomaticFix: false,
-        });
+        if (isInsideTryCatch) {
+          context.report({
+            ruleId: "typescript/unsafe-unvalidated-assertion",
+            category: "typescript",
+            severity: "warning",
+            confidence: "medium",
+            message: `Runtime boundary data from ${boundaryName} is asserted to type without runtime validation (exceptions caught by local try/catch).`,
+            file: sourceFile.fileName,
+            range,
+            evidence: [
+              {
+                message:
+                  "Type assertions bypass compiler checking. While the surrounding try/catch prevents uncaught runtime crashes, untyped runtime structures may silently degrade domain state.",
+                range,
+              },
+            ],
+            suggestedAction: "Validate payload with a runtime schema validator or type guard before asserting.",
+            safeAutomaticFix: false,
+          });
+        } else {
+          context.report({
+            ruleId: "typescript/unsafe-unvalidated-assertion",
+            category: "typescript",
+            severity: "error",
+            confidence: "high",
+            message: `Runtime boundary data from ${boundaryName} is asserted to type without runtime validation.`,
+            file: sourceFile.fileName,
+            range,
+            evidence: [
+              {
+                message:
+                  "Type assertions bypass compiler checking without verifying that runtime structure satisfies the target type.",
+                range,
+              },
+            ],
+            suggestedAction: "Validate payload with a runtime schema validator before asserting or casting.",
+            safeAutomaticFix: false,
+          });
+        }
       }
     });
   },

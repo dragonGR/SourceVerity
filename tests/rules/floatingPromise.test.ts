@@ -487,4 +487,76 @@ function setup() {
     const findings = runRuleOnCode(floatingPromiseRule, code);
     assert.equal(findings.length, 0);
   });
+
+  test("near-miss: flags custom user function named test that returns Promise", () => {
+    const code = `
+function test(): Promise<void> {
+  return Promise.reject(new Error("failure"));
+}
+
+function runTests() {
+  test();
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+    assert.equal(findings[0]?.severity, "error");
+    assert.equal(findings[0]?.confidence, "high");
+  });
+
+  test("near-miss: flags custom user function named describe that returns Promise", () => {
+    const code = `
+function describe(): Promise<void> {
+  return Promise.reject(new Error("failure"));
+}
+
+function runSuite() {
+  describe();
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.severity, "error");
+    assert.equal(findings[0]?.confidence, "high");
+  });
+
+  test("near-miss: flags custom dangerous thenable with animation control methods", () => {
+    const code = `
+interface DangerousAnimation extends PromiseLike<void> {
+  pause(): void;
+  play(): void;
+}
+
+declare function customAnimate(): DangerousAnimation;
+
+function trigger() {
+  customAnimate();
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+  });
+
+  test("flags unhandled rejection path inside React event handler", () => {
+    const code = `
+declare function deleteItem(id: string): Promise<void>;
+
+function DeleteButton({ id }: { id: string }) {
+  return (
+    <button
+      onClick={() => {
+        deleteItem(id);
+      }}
+    >
+      Delete
+    </button>
+  );
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+  });
 });

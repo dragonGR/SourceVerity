@@ -1,7 +1,7 @@
 import type * as tsType from "typescript";
 import { isPromiseLike } from "../engine/symbols.js";
 import { resolveConstantValue, unwrapExpression } from "./values.js";
-
+import { evaluateFrameworkPromiseCall } from "./frameworks.js";
 export type PromiseBehavior =
   | "handles-known-rejections"
   | "propagates"
@@ -56,15 +56,54 @@ export class FunctionSummaryContext {
 }
 
 /**
+ * Evaluates whether an await expression is awaiting a verified non-rejecting framework API or handled local function.
+ */
+function isAwaitProvenNonRejecting(
+  awaitNode: tsType.AwaitExpression,
+  context?: FunctionSummaryContext | undefined
+): boolean {
+  if (!context || !context.checker) return false;
+  const { ts, checker } = context;
+
+  const unwrapped = unwrapExpression(awaitNode.expression, ts);
+  if (ts.isCallExpression(unwrapped)) {
+    const fw = evaluateFrameworkPromiseCall(unwrapped, ts, checker);
+    if (fw.isHandled && !fw.isKnownRejecting) {
+      return true;
+    }
+
+    const localDecl = resolveLocalOrProjectFunctionDeclaration(unwrapped, ts, checker);
+    if (localDecl) {
+      const summary = context.getSummary(localDecl);
+      if (summary.promiseBehavior === "handles-known-rejections") {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
  * Checks if an expression contains an await or throw operation.
  */
-function containsAwaitOrThrow(node: tsType.Node, ts: typeof tsType): boolean {
+function containsAwaitOrThrow(
+  node: tsType.Node,
+  ts: typeof tsType,
+  context?: FunctionSummaryContext | undefined
+): boolean {
   let found = false;
   function walk(n: tsType.Node) {
     if (found) return;
-    if (ts.isAwaitExpression(n) || ts.isThrowStatement(n)) {
+    if (ts.isThrowStatement(n)) {
       found = true;
       return;
+    }
+    if (ts.isAwaitExpression(n)) {
+      if (!isAwaitProvenNonRejecting(n, context)) {
+        found = true;
+        return;
+      }
     }
     // Do not descend into nested function boundaries
     if (
@@ -344,7 +383,11 @@ function isSafeSynchronousPreamble(
 /**
  * Checks if a node contains an unhandled throw or await (not wrapped in an inner try-catch).
  */
-function containsUncaughtAwaitOrThrow(node: tsType.Node, ts: typeof tsType): boolean {
+function containsUncaughtAwaitOrThrow(
+  node: tsType.Node,
+  ts: typeof tsType,
+  context?: FunctionSummaryContext | undefined
+): boolean {
   let found = false;
   function walk(n: tsType.Node) {
     if (found) return;
@@ -365,25 +408,27 @@ function containsUncaughtAwaitOrThrow(node: tsType.Node, ts: typeof tsType): boo
     }
 
     if (ts.isAwaitExpression(n)) {
-      found = true;
-      return;
+      if (!isAwaitProvenNonRejecting(n, context)) {
+        found = true;
+        return;
+      }
     }
 
     if (ts.isTryStatement(n)) {
       // If try has no catch clause, its tryBlock can propagate rejections!
       if (!n.catchClause) {
-        if (containsAwaitOrThrow(n.tryBlock, ts)) {
+        if (containsAwaitOrThrow(n.tryBlock, ts, context)) {
           found = true;
           return;
         }
       } else {
         // Has catch clause: check catch block for uncaught throw/await
-        if (containsUncaughtAwaitOrThrow(n.catchClause.block, ts)) {
+        if (containsUncaughtAwaitOrThrow(n.catchClause.block, ts, context)) {
           found = true;
           return;
         }
       }
-      if (n.finallyBlock && containsUncaughtAwaitOrThrow(n.finallyBlock, ts)) {
+      if (n.finallyBlock && containsUncaughtAwaitOrThrow(n.finallyBlock, ts, context)) {
         found = true;
         return;
       }
@@ -425,26 +470,25 @@ function analyzeAsyncFunctionBody(
     if (ts.isTryStatement(stmt)) {
       if (!stmt.catchClause) {
         // try...finally with no catch: awaits in tryBlock propagate!
-        if (containsAwaitOrThrow(stmt.tryBlock, ts)) {
+        if (containsAwaitOrThrow(stmt.tryBlock, ts, context)) {
           hasUncaught = true;
         }
       } else {
         hasTryWithCatch = true;
         // catch block: check if it re-throws or has uncaught await
-        if (containsUncaughtAwaitOrThrow(stmt.catchClause.block, ts)) {
+        if (containsUncaughtAwaitOrThrow(stmt.catchClause.block, ts, context)) {
           hasUncaught = true;
         }
       }
-      if (stmt.finallyBlock && containsUncaughtAwaitOrThrow(stmt.finallyBlock, ts)) {
+      if (stmt.finallyBlock && containsUncaughtAwaitOrThrow(stmt.finallyBlock, ts, context)) {
         hasUncaught = true;
       }
     } else {
-      if (containsAwaitOrThrow(stmt, ts)) {
+      if (containsAwaitOrThrow(stmt, ts, context)) {
         hasUncaught = true;
       }
     }
   }
-
   if (hasUncaught) {
     return "propagates";
   }
