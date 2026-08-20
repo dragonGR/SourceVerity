@@ -272,54 +272,184 @@ export function isDOMAbortController(
 
 /**
  * Resolves whether a function/call node corresponds to a standard React hook
- * (e.g. useEffect, useState, useMemo), supporting direct imports, namespace imports,
- * and aliased imports originating from React or @types/react.
+ * (e.g. useEffect, useState, useMemo, useCallback, useRef), supporting direct imports,
+ * namespace imports, and aliased imports originating from React or @types/react.
+ *
+ * A call matches hookName ONLY if the actual resolved React export equals hookName.
  */
-export function resolveReactHook(node: tsType.Node, checker: tsType.TypeChecker, hookName: string): boolean {
-  let targetIdentifier: tsType.Node | undefined;
+interface PropertyAccessLikeNode extends tsType.Node {
+  readonly expression: tsType.Node;
+  readonly name: tsType.Node & { readonly text?: string };
+}
 
-  // Case 1: React.useEffect(...) property access
-  if ("expression" in node && node.expression && typeof node.expression === "object") {
-    const callExpr = node.expression;
-    if ("name" in callExpr && "expression" in callExpr) {
-      const propName = callExpr.name;
-      if (propName && typeof propName === "object" && "text" in propName && propName.text === hookName) {
-        targetIdentifier = propName as unknown as tsType.Node;
-      }
-    } else {
-      targetIdentifier = callExpr as unknown as tsType.Node;
-    }
-  } else {
-    targetIdentifier = node;
+interface CallLikeNode extends tsType.Node {
+  readonly expression: tsType.Node;
+  readonly arguments: tsType.NodeArray<tsType.Node>;
+}
+
+interface BinaryLikeNode extends tsType.Node {
+  readonly right: tsType.Node;
+  readonly operatorToken: tsType.Node;
+}
+
+function isPropertyAccessLike(node: tsType.Node): node is PropertyAccessLikeNode {
+  return (
+    "name" in node &&
+    "expression" in node &&
+    node.name !== undefined &&
+    node.expression !== undefined &&
+    typeof (node as { name?: unknown }).name === "object" &&
+    (node as { name?: unknown }).name !== null &&
+    !("arguments" in node)
+  );
+}
+
+function isReactImportDeclaration(decl: tsType.Declaration): boolean {
+  const fileName = decl.getSourceFile().fileName.replace(/\\/g, "/");
+  if (
+    fileName.includes("react/index.d.ts") ||
+    fileName.includes("@types/react/") ||
+    fileName.includes("react.d.ts") ||
+    (fileName.includes("/react/") && fileName.endsWith(".d.ts"))
+  ) {
+    return true;
   }
 
-  if (!targetIdentifier) {
+  let current: tsType.Node | undefined = decl;
+  while (current) {
+    if (
+      "moduleSpecifier" in current &&
+      current.moduleSpecifier &&
+      typeof current.moduleSpecifier === "object" &&
+      "text" in current.moduleSpecifier &&
+      ((current.moduleSpecifier as { text?: unknown }).text === "react" ||
+        (current.moduleSpecifier as { text?: unknown }).text === "react-dom")
+    ) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+function getReactExportName(symbol: tsType.Symbol, checker: tsType.TypeChecker): string | undefined {
+  // 1. If symbol is an alias, try resolving the target symbol first
+  if ((symbol.flags & 2097152) !== 0) {
+    try {
+      const aliased = checker.getAliasedSymbol(symbol);
+      if (aliased && aliased !== symbol && isReactSymbol(aliased)) {
+        return aliased.name;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2. Check declarations for ImportSpecifier where module is react
+  const declarations = symbol.getDeclarations();
+  if (declarations && declarations.length > 0) {
+    for (const decl of declarations) {
+      if (isReactImportDeclaration(decl)) {
+        if ("propertyName" in decl && decl.propertyName && typeof decl.propertyName === "object" && "text" in decl.propertyName) {
+          const propIdent = decl.propertyName as { text?: string };
+          if (typeof propIdent.text === "string") {
+            return propIdent.text;
+          }
+        }
+        if ("name" in decl && decl.name && typeof decl.name === "object" && "text" in decl.name) {
+          const nameIdent = decl.name as { text?: string };
+          if (typeof nameIdent.text === "string") {
+            return nameIdent.text;
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Direct React symbol declaration
+  if (isReactSymbol(symbol)) {
+    return symbol.name;
+  }
+
+  return undefined;
+}
+
+export function resolveReactHook(node: tsType.Node, checker: tsType.TypeChecker, hookName: string): boolean {
+  if (!node || !checker) return false;
+
+  let current: tsType.Node = node;
+  // If CallExpression, inspect its callee
+  if ("arguments" in current && "expression" in current && (current as CallLikeNode).expression) {
+    current = (current as CallLikeNode).expression;
+  }
+
+  // Unwrap parentheses, non-null assertions, type assertions, and sequence expressions
+  while (current) {
+    if (isPropertyAccessLike(current)) {
+      break;
+    }
+    if ("expression" in current && (current as { readonly expression?: tsType.Node }).expression) {
+      current = (current as { readonly expression: tsType.Node }).expression;
+    } else if ("right" in current && "operatorToken" in current && (current as BinaryLikeNode).right) {
+      current = (current as BinaryLikeNode).right;
+    } else {
+      break;
+    }
+  }
+
+  if (!current) return false;
+
+  // Case 1: Property access on React namespace (e.g. React.useEffect, React.useCallback)
+  if (isPropertyAccessLike(current)) {
+    const propName = current.name;
+    const propText = propName.text;
+
+    // If the accessed property name does not match the requested hookName, it cannot match
+    if (propText !== hookName) {
+      return false;
+    }
+
+    // Verify that either the receiver expression or the property symbol originates from React
+    const receiverExpr = current.expression;
+    const receiverSymbol = checker.getSymbolAtLocation(receiverExpr);
+    if (receiverSymbol) {
+      if (isReactSymbol(receiverSymbol)) {
+        return true;
+      }
+      if ((receiverSymbol.flags & 2097152) !== 0) {
+        try {
+          const aliased = checker.getAliasedSymbol(receiverSymbol);
+          if (aliased && isReactSymbol(aliased)) {
+            return true;
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const propSymbol = checker.getSymbolAtLocation(propName) ?? checker.getSymbolAtLocation(current);
+    if (propSymbol) {
+      const exportName = getReactExportName(propSymbol, checker);
+      if (exportName === hookName) {
+        return true;
+      }
+    }
+
     return false;
   }
 
-  const symbol = checker.getSymbolAtLocation(targetIdentifier);
+  // Case 2: Identifier or direct symbol (e.g. useEffect, useCallback, or aliased import like cb / effect)
+  const symbol = checker.getSymbolAtLocation(current);
   if (!symbol) {
     return false;
   }
 
-  if (symbol.name === hookName && isReactSymbol(symbol)) {
-    return true;
-  }
-
-  // Check alias symbol if aliased (import { useEffect as myEffect })
-  try {
-    const aliased = checker.getAliasedSymbol(symbol);
-    if (aliased && aliased.name === hookName && isReactSymbol(aliased)) {
-      return true;
-    }
-  } catch {
-    // Not an aliased symbol
-  }
-
-  return false;
+  const exportName = getReactExportName(symbol, checker);
+  return exportName === hookName;
 }
 
-function isReactSymbol(symbol: tsType.Symbol): boolean {
+export function isReactSymbol(symbol: tsType.Symbol): boolean {
   const declarations = symbol.getDeclarations();
   if (!declarations || declarations.length === 0) {
     return false;
@@ -327,7 +457,12 @@ function isReactSymbol(symbol: tsType.Symbol): boolean {
 
   return declarations.some((decl) => {
     const fileName = decl.getSourceFile().fileName.replace(/\\/g, "/");
-    if (fileName.includes("react/index.d.ts") || fileName.includes("@types/react/") || fileName.includes("react.d.ts")) {
+    if (
+      fileName.includes("react/index.d.ts") ||
+      fileName.includes("@types/react/") ||
+      fileName.includes("react.d.ts") ||
+      (fileName.includes("/react/") && fileName.endsWith(".d.ts"))
+    ) {
       return true;
     }
 
@@ -347,4 +482,152 @@ function isReactSymbol(symbol: tsType.Symbol): boolean {
 
     return false;
   });
+}
+
+/**
+ * Resolves whether a CallExpression is an authentic React lifecycle hook call (useEffect or useLayoutEffect).
+ * When TypeChecker is available, uses semantic symbol resolution only.
+ * When TypeChecker is unavailable, falls back to syntactic identification.
+ */
+export function isReactLifecycleHookCall(
+  node: tsType.CallExpression,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): boolean {
+  if (checker) {
+    return resolveReactHook(node, checker, "useEffect") || resolveReactHook(node, checker, "useLayoutEffect");
+  }
+
+  // Syntactic fallback ONLY when TypeChecker is genuinely unavailable
+  let callee: tsType.Expression = node.expression;
+  while (ts.isParenthesizedExpression(callee)) {
+    callee = callee.expression;
+  }
+  if (ts.isIdentifier(callee)) {
+    return callee.text === "useEffect" || callee.text === "useLayoutEffect";
+  }
+  if (ts.isPropertyAccessExpression(callee)) {
+    if (ts.isIdentifier(callee.name) && (callee.name.text === "useEffect" || callee.name.text === "useLayoutEffect")) {
+      if (ts.isIdentifier(callee.expression) && (callee.expression.text === "React" || callee.expression.text === "ReactCurrentDispatcher")) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Helper to identify whether a declaration originates from a standard HTTP Response library
+ * (DOM lib.dom.d.ts, undici, node-fetch, Cloudflare Workers, Node.js @types/node).
+ */
+export function isStandardResponseDeclaration(decl: tsType.Declaration): boolean {
+  const fileName = decl.getSourceFile().fileName.toLowerCase().replace(/\\/g, "/");
+  return (
+    fileName.includes("lib.dom.d.ts") ||
+    fileName.includes("lib.dom.iterable.d.ts") ||
+    fileName.includes("lib.webworker.d.ts") ||
+    fileName.includes("typescript/lib/") ||
+    fileName.includes("@types/node/") ||
+    fileName.includes("undici-types/") ||
+    fileName.includes("node_modules/undici/") ||
+    fileName.includes("node-fetch/") ||
+    fileName.includes("@types/node-fetch/") ||
+    fileName.includes("@cloudflare/workers-types/")
+  );
+}
+
+/**
+ * Verifies that a PropertyAccessExpression with method name .json() originates
+ * from an authentic standard fetch Response object (e.g. DOM Response, undici, node-fetch, Cloudflare Worker),
+ * and does not contain conflicting user-defined declaration origin (e.g. declaration merging or local class/interface).
+ */
+export function isFetchResponseMethod(
+  callTarget: tsType.PropertyAccessExpression,
+  checker: tsType.TypeChecker | undefined,
+  ts: typeof tsType
+): boolean {
+  if (callTarget.name.text !== "json") {
+    return false;
+  }
+
+  if (checker) {
+    try {
+      const receiverType = checker.getTypeAtLocation(callTarget.expression);
+      const typesToCheck = receiverType.isUnion()
+        ? receiverType.types.filter(
+            (t) =>
+              !(
+                t.flags &
+                (ts.TypeFlags.Null |
+                  ts.TypeFlags.Undefined |
+                  ts.TypeFlags.Void)
+              )
+          )
+        : [receiverType];
+
+      if (typesToCheck.length === 0) return false;
+
+      for (const type of typesToCheck) {
+        const jsonProp = checker.getPropertyOfType(type, "json");
+        if (!jsonProp) return false;
+
+        const jsonDecls = jsonProp.getDeclarations();
+        if (!jsonDecls || jsonDecls.length === 0) return false;
+
+        // Must NOT contain any user-defined declaration (e.g. local method or declaration merging)
+        const hasUserDefinedJson = jsonDecls.some((d) => !isStandardResponseDeclaration(d));
+        if (hasUserDefinedJson) {
+          return false;
+        }
+
+        // Must have verified standard Response origin
+        const hasStandardJson = jsonDecls.some(isStandardResponseDeclaration);
+        if (!hasStandardJson) {
+          return false;
+        }
+
+        // Also verify the receiver type's symbol declarations to ensure the type itself has no local/custom declaration
+        const typeSymbol = type.getSymbol() ?? type.aliasSymbol;
+        if (typeSymbol) {
+          const typeDecls = typeSymbol.getDeclarations();
+          if (typeDecls && typeDecls.length > 0) {
+            const hasUserDefinedType = typeDecls.some((d) => !isStandardResponseDeclaration(d));
+            if (hasUserDefinedType) {
+              return false;
+            }
+            const hasStandardType = typeDecls.some(isStandardResponseDeclaration);
+            if (!hasStandardType) {
+              return false;
+            }
+          }
+        }
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Syntactic fallback when TypeChecker is unavailable:
+  // Only accept expressions commonly named response/res or direct fetch calls
+  let receiver: tsType.Expression = callTarget.expression;
+  while (ts.isParenthesizedExpression(receiver) || ts.isAwaitExpression(receiver)) {
+    receiver = receiver.expression;
+  }
+  if (ts.isIdentifier(receiver)) {
+    return receiver.text === "response" || receiver.text === "res";
+  }
+  if (ts.isCallExpression(receiver)) {
+    let callee: tsType.Expression = receiver.expression;
+    while (ts.isParenthesizedExpression(callee)) {
+      callee = callee.expression;
+    }
+    if (ts.isIdentifier(callee) && callee.text === "fetch") {
+      return true;
+    }
+  }
+
+  return false;
 }

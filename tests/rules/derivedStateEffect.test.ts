@@ -122,4 +122,107 @@ function Balance({ amountWei }: { amountWei: bigint }) {
     const findings = runRuleOnCode(derivedStateEffectRule, code);
     assert.equal(findings.length, 1);
   });
+
+  test("does not flag setter call inside local custom useEffect function", () => {
+    const code = `
+function useEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component({ value }: { value: string }) {
+  const [state, setState] = [value, (v: string) => {}];
+  useEffect(() => {
+    setState(value);
+  }, [value]);
+}
+    `.trim();
+    const findings = runRuleOnCode(derivedStateEffectRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag setter call inside local custom useLayoutEffect function", () => {
+    const code = `
+function useLayoutEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component({ value }: { value: string }) {
+  const [state, setState] = [value, (v: string) => {}];
+  useLayoutEffect(() => {
+    setState(value);
+  }, [value]);
+}
+    `.trim();
+    const findings = runRuleOnCode(derivedStateEffectRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag setter call inside customEffect imported from local file", () => {
+    const code = `
+import { useEffect as customEffect } from './local-hooks';
+function Component({ value }: { value: string }) {
+  const [state, setState] = [value, (v: string) => {}];
+  customEffect(() => {
+    setState(value);
+  }, [value]);
+}
+    `.trim();
+    const findings = runRuleOnCode(derivedStateEffectRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("flags derived state inside aliased React useEffect import", () => {
+    const code = `
+import { useEffect as effect, useState } from 'react';
+function Component({ value }: { value: string }) {
+  const [state, setState] = useState(value);
+  effect(() => {
+    setState(value);
+  }, [value]);
+}
+    `.trim();
+    const findings = runRuleOnCode(derivedStateEffectRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "react/derived-state-effect");
+  });
+
+  test("flags derived state inside React.useEffect namespace call", () => {
+    const code = `
+import * as React from 'react';
+function Component({ value }: { value: string }) {
+  const [state, setState] = React.useState(value);
+  React.useEffect(() => {
+    setState(value);
+  }, [value]);
+}
+    `.trim();
+    const findings = runRuleOnCode(derivedStateEffectRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "react/derived-state-effect");
+  });
+  test("does not flag setState inside useCallback", () => {
+    const code = `
+import { useCallback, useState } from 'react';
+function Component({ value }: { value: string }) {
+  const [state, setState] = useState(value);
+  const update = useCallback(() => {
+    setState(value);
+  }, [value]);
+}
+    `.trim();
+    const findings = runRuleOnCode(derivedStateEffectRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag setState inside aliased useCallback", () => {
+    const code = `
+import { useCallback as cb, useState } from 'react';
+function Component({ value }: { value: string }) {
+  const [state, setState] = useState(value);
+  const update = cb(() => {
+    setState(value);
+  }, [value]);
+}
+    `.trim();
+    const findings = runRuleOnCode(derivedStateEffectRule, code);
+    assert.equal(findings.length, 0);
+  });
 });

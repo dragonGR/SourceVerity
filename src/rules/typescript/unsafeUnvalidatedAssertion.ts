@@ -1,10 +1,17 @@
 import type * as tsType from "typescript";
-import { getNodeSourceRange } from "../../engine/symbols.js";
+import { getNodeSourceRange, isFetchResponseMethod } from "../../engine/symbols.js";
 import type { Rule, RuleContext } from "../../core/types.js";
 
 function unwrapExpression(expr: tsType.Expression, ts: typeof tsType): tsType.Expression {
   let current = expr;
-  while (ts.isParenthesizedExpression(current) || ts.isAwaitExpression(current)) {
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAwaitExpression(current) ||
+    (ts.isAsExpression(current) &&
+      (current.type.kind === ts.SyntaxKind.UnknownKeyword || current.type.kind === ts.SyntaxKind.AnyKeyword)) ||
+    (ts.isTypeAssertionExpression(current) &&
+      (current.type.kind === ts.SyntaxKind.UnknownKeyword || current.type.kind === ts.SyntaxKind.AnyKeyword))
+  ) {
     current = current.expression;
   }
   return current;
@@ -21,7 +28,7 @@ export const unsafeUnvalidatedAssertionRule: Rule = {
   },
 
   analyze(context: RuleContext): void {
-    const { sourceFile, ts } = context;
+    const { sourceFile, checker, ts } = context;
     if (!ts) return;
 
     context.visitNodes((node: tsType.Node) => {
@@ -67,7 +74,7 @@ export const unsafeUnvalidatedAssertionRule: Rule = {
           ) {
             isRuntimeBoundary = true;
             boundaryName = "JSON.parse()";
-          } else if (callTarget.name.text === "json") {
+          } else if (callTarget.name.text === "json" && isFetchResponseMethod(callTarget, checker, ts)) {
             // 2. response.json()
             isRuntimeBoundary = true;
             boundaryName = "response.json()";

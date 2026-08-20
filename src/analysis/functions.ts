@@ -1,5 +1,5 @@
 import type * as tsType from "typescript";
-import { isPromiseLike } from "../engine/symbols.js";
+import { isPromiseLike, resolveReactHook } from "../engine/symbols.js";
 import { resolveConstantValue, unwrapExpression } from "./values.js";
 import { evaluateFrameworkPromiseCall } from "./frameworks.js";
 export type PromiseBehavior =
@@ -685,7 +685,10 @@ function resolveFunctionFromInitializer(
   // useCallback(async () => ...)
   if (ts.isCallExpression(unwrapped)) {
     const callee = unwrapExpression(unwrapped.expression, ts);
-    if (ts.isIdentifier(callee) && callee.text === "useCallback") {
+    const isCallback = checker
+      ? resolveReactHook(unwrapped, checker, "useCallback")
+      : (ts.isIdentifier(callee) && callee.text === "useCallback");
+    if (isCallback) {
       const cbArg = unwrapped.arguments[0];
       if (cbArg) {
         return resolveFunctionFromInitializer(cbArg, ts, checker);
@@ -783,7 +786,10 @@ function computeResolveLocalOrProjectFunctionDeclaration(
         const init = unwrapExpression(decl.initializer, ts);
         if (ts.isCallExpression(init)) {
           const initCallee = unwrapExpression(init.expression, ts);
-          if (ts.isIdentifier(initCallee) && initCallee.text === "useRef") {
+          const isRef = checker
+            ? resolveReactHook(init, checker, "useRef")
+            : (ts.isIdentifier(initCallee) && initCallee.text === "useRef");
+          if (isRef) {
             const refArg = init.arguments[0];
             if (refArg) {
               if (ts.isIdentifier(refArg)) {

@@ -39,4 +39,75 @@ function LiveFeed() {
     const findings = runRuleOnCode(missingEffectCleanupRule, code);
     assert.equal(findings.length, 0);
   });
+
+  test("does not flag WebSocket inside local custom useEffect function", () => {
+    const code = `
+function useEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component() {
+  useEffect(() => {
+    const ws = new WebSocket('wss://api.example.com');
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(missingEffectCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag WebSocket inside local custom useLayoutEffect function", () => {
+    const code = `
+function useLayoutEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component() {
+  useLayoutEffect(() => {
+    const ws = new WebSocket('wss://api.example.com');
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(missingEffectCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag WebSocket inside customEffect imported from local file", () => {
+    const code = `
+import { useEffect as customEffect } from './local-hooks';
+function Component() {
+  customEffect(() => {
+    const ws = new WebSocket('wss://api.example.com');
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(missingEffectCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("flags WebSocket inside aliased React useEffect import", () => {
+    const code = `
+import { useEffect as effect } from 'react';
+function Component() {
+  effect(() => {
+    const ws = new WebSocket('wss://api.example.com');
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(missingEffectCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "react/missing-effect-cleanup");
+  });
+
+  test("flags WebSocket inside React.useEffect namespace call", () => {
+    const code = `
+import * as React from 'react';
+function Component() {
+  React.useEffect(() => {
+    const ws = new WebSocket('wss://api.example.com');
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(missingEffectCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "react/missing-effect-cleanup");
+  });
 });

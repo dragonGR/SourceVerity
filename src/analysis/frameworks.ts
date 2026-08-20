@@ -61,6 +61,46 @@ function isCallableArgument(
   }
   return false;
 }
+/**
+ * Determines whether a declaration originates from an authentic React Router / Remix package or import.
+ */
+function isReactRouterDeclaration(decl: tsType.Declaration): boolean {
+  const fileName = decl.getSourceFile().fileName.replace(/\\/g, "/");
+  if (
+    fileName.includes("react-router/") ||
+    fileName.includes("react-router-dom/") ||
+    fileName.includes("@remix-run/router/") ||
+    fileName.includes("react-router-native/") ||
+    fileName.includes("@types/react-router/") ||
+    fileName.includes("@types/react-router-dom/")
+  ) {
+    return true;
+  }
+
+  let current: tsType.Node | undefined = decl;
+  while (current) {
+    if (
+      "moduleSpecifier" in current &&
+      current.moduleSpecifier &&
+      typeof current.moduleSpecifier === "object" &&
+      "text" in current.moduleSpecifier &&
+      typeof current.moduleSpecifier.text === "string"
+    ) {
+      const mod = current.moduleSpecifier.text;
+      if (
+        mod === "react-router" ||
+        mod === "react-router-dom" ||
+        mod === "@remix-run/router" ||
+        mod === "react-router-native"
+      ) {
+        return true;
+      }
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
 
 /**
  * Evaluates whether a CallExpression represents a verified, handled framework API call.
@@ -100,11 +140,45 @@ export function evaluateFrameworkPromiseCall(
 
   const declarations = [...(targetSymbol?.getDeclarations() ?? [])];
 
+  // If target is a variable initialized by a function call (e.g. const goto = useNavigate()),
+  // also collect declarations from the initializer's callee symbol
+  if (targetSymbol?.valueDeclaration && ts.isVariableDeclaration(targetSymbol.valueDeclaration) && targetSymbol.valueDeclaration.initializer) {
+    const initExpr = unwrapExpression(targetSymbol.valueDeclaration.initializer, ts);
+    if (ts.isCallExpression(initExpr)) {
+      const initCallee = unwrapExpression(initExpr.expression, ts);
+      const initSym = checker.getSymbolAtLocation(initCallee);
+      let resolvedInitSym = initSym;
+      if (resolvedInitSym && (resolvedInitSym.flags & ts.SymbolFlags.Alias)) {
+        try {
+          resolvedInitSym = checker.getAliasedSymbol(resolvedInitSym);
+        } catch {
+          // ignore
+        }
+      }
+      const initDecls = resolvedInitSym?.getDeclarations() ?? initSym?.getDeclarations();
+      if (initDecls) {
+        declarations.push(...initDecls);
+      }
+    }
+  }
+
   // Also collect declarations from the type of the callee/target (e.g. NavigateFunction)
   try {
     const typeAtLoc = checker.getTypeAtLocation(targetIdentifier);
-    const typeSymbol = typeAtLoc.getSymbol() ?? typeAtLoc.aliasSymbol;
-    if (typeSymbol) {
+    const typeSymbols: tsType.Symbol[] = [];
+    const mainSym = typeAtLoc.getSymbol();
+    if (mainSym) typeSymbols.push(mainSym);
+    const aliasSym = typeAtLoc.aliasSymbol;
+    if (aliasSym) typeSymbols.push(aliasSym);
+    if (typeAtLoc.isUnion()) {
+      for (const member of typeAtLoc.types) {
+        const mSym = member.getSymbol();
+        if (mSym) typeSymbols.push(mSym);
+        const mAlias = member.aliasSymbol;
+        if (mAlias) typeSymbols.push(mAlias);
+      }
+    }
+    for (const typeSymbol of typeSymbols) {
       let resolvedTypeSymbol: tsType.Symbol | undefined = typeSymbol;
       if (resolvedTypeSymbol.flags & ts.SymbolFlags.Alias) {
         try {
@@ -112,12 +186,6 @@ export function evaluateFrameworkPromiseCall(
         } catch {
           // ignore
         }
-      }
-      if (resolvedTypeSymbol?.name === "NavigateFunction") {
-        return {
-          isHandled: true,
-          reason: "React Router NavigateFunction optional navigation contract.",
-        };
       }
       const typeDecls = resolvedTypeSymbol?.getDeclarations();
       if (typeDecls) {
@@ -210,12 +278,20 @@ export function evaluateFrameworkPromiseCall(
     }
 
     // 4. React Router / Remix: NavigateFunction
-    if (
-      fileName.includes("react-router/") ||
-      fileName.includes("react-router-dom/") ||
-      fileName.includes("@remix-run/router/")
-    ) {
-      if (methodName === "navigate" || targetSymbol.name === "NavigateFunction") {
+    if (isReactRouterDeclaration(decl)) {
+      const declNamed = decl as { name?: { text?: string } };
+      const declName = declNamed.name?.text ?? "";
+      const isNavigateContract =
+        declName === "NavigateFunction" ||
+        declName === "useNavigate" ||
+        declName === "navigate" ||
+        (ts.isInterfaceDeclaration(decl) && decl.name.text === "NavigateFunction") ||
+        (ts.isTypeAliasDeclaration(decl) && decl.name.text === "NavigateFunction") ||
+        (ts.isFunctionDeclaration(decl) && decl.name?.text === "useNavigate") ||
+        methodName === "navigate" ||
+        targetSymbol?.name === "NavigateFunction";
+
+      if (isNavigateContract) {
         return {
           isHandled: true,
           reason: "React Router NavigateFunction optional navigation contract.",

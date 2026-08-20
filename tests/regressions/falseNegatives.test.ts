@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { nonNullAssertionRiskRule } from "../../src/rules/typescript/nonNullAssertionRisk.js";
 import { derivedStateEffectRule } from "../../src/rules/react/derivedStateEffect.js";
 import { floatingPromiseRule } from "../../src/rules/async/floatingPromise.js";
+import { unsafeUnvalidatedAssertionRule } from "../../src/rules/typescript/unsafeUnvalidatedAssertion.js";
+import { eventListenerCleanupRule } from "../../src/rules/browser/eventListenerCleanup.js";
 import { runRuleOnCode } from "../rules/ruleTestUtils.js";
 
 describe("adversarial false-negative regression test suite", () => {
@@ -495,5 +497,99 @@ function run(x: { val?: string }) {
     assert.equal(findings[0]?.ruleId, "async/floating-promise");
     assert.equal(findings[0]?.severity, "error");
     assert.equal(findings[0]?.confidence, "high");
+  });
+
+  test("adversarial: flags fake local interface NavigateFunction when not from React Router", () => {
+    const code = `
+interface NavigateFunction {
+  (to: string): Promise<void>;
+}
+declare const customNavigate: NavigateFunction;
+const goto: NavigateFunction = customNavigate;
+function run() {
+  goto("/dashboard");
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+  });
+
+  test("adversarial: flags custom async function named goto", () => {
+    const code = `
+declare function risky(url: string): Promise<void>;
+const goto = async (url: string) => {
+  await risky(url);
+};
+function run() {
+  goto("/dashboard");
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+  });
+
+  test("adversarial: does not flag customConverter.json() as response.json() boundary", () => {
+    const code = `
+interface DomainType {
+  id: string;
+}
+class CustomConverter {
+  json(): unknown {
+    return { id: "test" };
+  }
+}
+const customConverter = new CustomConverter();
+const x = customConverter.json() as DomainType;
+    `.trim();
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("adversarial: does not flag local interface Response with json() method", () => {
+    const code = `
+interface User {
+  id: string;
+}
+interface Response {
+  json(): unknown;
+}
+declare const localObject: Response;
+const response: Response = localObject;
+const data = response.json() as User;
+    `.trim();
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("adversarial: does not flag listener inside local function named useEffect", () => {
+    const code = `
+function useEffect(cb: () => void) {
+  cb();
+}
+function Component() {
+  useEffect(() => {
+    window.addEventListener('click', () => {});
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("adversarial: does not flag listener inside local function named useLayoutEffect", () => {
+    const code = `
+function useLayoutEffect(cb: () => void) {
+  cb();
+}
+function Component() {
+  useLayoutEffect(() => {
+    window.addEventListener('click', () => {});
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 0);
   });
 });

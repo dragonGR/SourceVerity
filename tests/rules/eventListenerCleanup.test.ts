@@ -332,4 +332,75 @@ function HandlerMismatchComponent() {
     const findings = runRuleOnCode(eventListenerCleanupRule, code);
     assert.equal(findings.length, 1);
   });
+
+  test("does not flag addEventListener inside local custom useEffect function", () => {
+    const code = `
+function useEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component() {
+  useEffect(() => {
+    window.addEventListener('click', () => {});
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag addEventListener inside local custom useLayoutEffect function", () => {
+    const code = `
+function useLayoutEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component() {
+  useLayoutEffect(() => {
+    window.addEventListener('click', () => {});
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag addEventListener inside customEffect imported from local file", () => {
+    const code = `
+import { useEffect as customEffect } from './local-hooks';
+function Component() {
+  customEffect(() => {
+    window.addEventListener('click', () => {});
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("flags addEventListener inside aliased React useEffect import", () => {
+    const code = `
+import { useEffect as effect } from 'react';
+function Component() {
+  effect(() => {
+    window.addEventListener('click', () => {});
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "browser/event-listener-cleanup");
+  });
+
+  test("flags addEventListener inside React.useEffect namespace call", () => {
+    const code = `
+import * as React from 'react';
+function Component() {
+  React.useEffect(() => {
+    window.addEventListener('click', () => {});
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(eventListenerCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "browser/event-listener-cleanup");
+  });
 });

@@ -1,5 +1,5 @@
 import type * as tsType from "typescript";
-import { getNodeSourceRange, resolveReactHook, isDOMGlobal } from "../../engine/symbols.js";
+import { getNodeSourceRange, isReactLifecycleHookCall, isDOMGlobal } from "../../engine/symbols.js";
 import type { Rule, RuleContext } from "../../core/types.js";
 
 const DOM_OBSERVER_NAMES = new Set(["ResizeObserver", "IntersectionObserver", "MutationObserver"]);
@@ -46,14 +46,7 @@ export const observerCleanupRule: Rule = {
     context.visitNodes((node: tsType.Node) => {
       if (!ts.isCallExpression(node)) return;
 
-      let isLifecycleHook = false;
-      if (checker && (resolveReactHook(node, checker, "useEffect") || resolveReactHook(node, checker, "useLayoutEffect"))) {
-        isLifecycleHook = true;
-      } else if (ts.isIdentifier(node.expression) && (node.expression.text === "useEffect" || node.expression.text === "useLayoutEffect")) {
-        isLifecycleHook = true;
-      }
-
-      if (!isLifecycleHook) return;
+      if (!isReactLifecycleHookCall(node, ts, checker)) return;
 
       const effectCallback = node.arguments[0];
       if (!effectCallback || (!ts.isArrowFunction(effectCallback) && !ts.isFunctionExpression(effectCallback))) {

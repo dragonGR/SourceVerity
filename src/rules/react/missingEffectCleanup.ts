@@ -1,5 +1,5 @@
 import type * as tsType from "typescript";
-import { getNodeSourceRange, resolveReactHook } from "../../engine/symbols.js";
+import { getNodeSourceRange, isReactLifecycleHookCall } from "../../engine/symbols.js";
 import type { Rule, RuleContext } from "../../core/types.js";
 
 export const missingEffectCleanupRule: Rule = {
@@ -19,14 +19,7 @@ export const missingEffectCleanupRule: Rule = {
     context.visitNodes((node: tsType.Node) => {
       if (!ts.isCallExpression(node)) return;
 
-      let isEffectHook = false;
-      if (checker && (resolveReactHook(node, checker, "useEffect") || resolveReactHook(node, checker, "useLayoutEffect"))) {
-        isEffectHook = true;
-      } else if (ts.isIdentifier(node.expression) && (node.expression.text === "useEffect" || node.expression.text === "useLayoutEffect")) {
-        isEffectHook = true;
-      }
-
-      if (!isEffectHook) return;
+      if (!isReactLifecycleHookCall(node, ts, checker)) return;
 
       const args = node.arguments;
       if (!args || args.length === 0) return;

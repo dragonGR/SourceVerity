@@ -743,4 +743,86 @@ function run() {
     assert.equal(findings[0]?.severity, "error");
     assert.equal(findings[0]?.confidence, "high");
   });
+  test("does not flag goto() when initialized by React Router useNavigate()", () => {
+    const code = `
+import { useNavigate } from "react-router-dom";
+
+function Component() {
+  const goto = useNavigate();
+  goto("/dashboard");
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag nav() when initialized by React Router useNavigate()", () => {
+    const code = `
+import { useNavigate } from "react-router-dom";
+
+function Component() {
+  const nav = useNavigate();
+  nav("/");
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag redirectTo when typed as NavigateFunction from react-router-dom", () => {
+    const code = `
+import { useNavigate, type NavigateFunction } from "react-router-dom";
+
+function Component() {
+  const redirectTo: NavigateFunction = useNavigate();
+  redirectTo("/x");
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("flags custom async function named goto called in statement position", () => {
+    const code = `
+declare function risky(url: string): Promise<void>;
+const goto = async (url: string) => {
+  await risky(url);
+};
+function run() {
+  goto("/dashboard");
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+  });
+
+  test("flags custom function typed () => Promise<void> named navigate", () => {
+    const code = `
+declare const customNavigate: () => Promise<void>;
+const navigate: () => Promise<void> = customNavigate;
+function run() {
+  navigate();
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+  });
+
+  test("flags fake local interface NavigateFunction when declaration does not originate from React Router", () => {
+    const code = `
+interface NavigateFunction {
+  (to: string): Promise<void>;
+}
+declare const customNavigate: NavigateFunction;
+const goto: NavigateFunction = customNavigate;
+function run() {
+  goto("/");
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+  });
 });

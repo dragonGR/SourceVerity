@@ -142,4 +142,176 @@ function parseUserWithGuard(payload: string): User | null {
     const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
     assert.equal(findings.length, 0);
   });
+
+  test("flags await fetch() response.json() asserted directly to domain type", () => {
+    const code = `
+interface User {
+  id: string;
+  name: string;
+}
+
+async function getUser(url: string): Promise<User> {
+  const response = await fetch(url);
+  const data = (await response.json()) as User;
+  return data;
+}
+    `.trim();
+
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/unsafe-unvalidated-assertion");
+    assert.equal(findings[0]?.severity, "error");
+  });
+
+  test("flags parameter of type Response response.json() asserted to domain type", () => {
+    const code = `
+interface User {
+  id: string;
+  name: string;
+}
+
+async function f(response: Response): Promise<User> {
+  return (await response.json()) as User;
+}
+    `.trim();
+
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/unsafe-unvalidated-assertion");
+  });
+
+  test("does not flag customConverter.json() asserted to domain type", () => {
+    const code = `
+interface DomainType {
+  id: string;
+}
+
+class CustomConverter {
+  json(): unknown {
+    return { id: "test" };
+  }
+}
+
+const customConverter = new CustomConverter();
+const x = customConverter.json() as DomainType;
+    `.trim();
+
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag form.json() asserted to FormState", () => {
+    const code = `
+interface FormState {
+  values: Record<string, string>;
+}
+
+class Form {
+  json(): unknown {
+    return { values: {} };
+  }
+}
+
+const form = new Form();
+const state = form.json() as FormState;
+    `.trim();
+
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag custom local interface named Response with json() method", () => {
+    const code = `
+interface User {
+  id: string;
+}
+
+interface Response {
+  json(): unknown;
+}
+
+declare const localObject: Response;
+const response: Response = localObject;
+const data = response.json() as User;
+    `.trim();
+
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("flags globalThis.Response response.json() asserted to domain type", () => {
+    const code = `
+interface User {
+  id: string;
+  name: string;
+}
+
+function f(r: globalThis.Response) {
+  return r.json() as unknown as User;
+}
+    `.trim();
+
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/unsafe-unvalidated-assertion");
+  });
+
+  test("does not flag locally declared class Response with json() asserted to domain type", () => {
+    const code = `
+interface User {
+  id: string;
+}
+
+export class Response {
+  json(): unknown {
+    return {};
+  }
+}
+
+const r = new Response();
+export const u = r.json() as User;
+    `.trim();
+
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag class CustomResponse with json() asserted to domain type", () => {
+    const code = `
+interface User {
+  id: string;
+}
+
+class CustomResponse {
+  json() {
+    return {};
+  }
+}
+
+const r = new CustomResponse();
+const u = r.json() as User;
+    `.trim();
+
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag object literal with json() method asserted to domain type", () => {
+    const code = `
+interface User {
+  id: string;
+}
+
+const customConverter = {
+  json() {
+    return {};
+  }
+};
+
+const u = customConverter.json() as User;
+    `.trim();
+
+    const findings = runRuleOnCode(unsafeUnvalidatedAssertionRule, code);
+    assert.equal(findings.length, 0);
+  });
 });

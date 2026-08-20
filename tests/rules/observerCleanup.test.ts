@@ -153,4 +153,75 @@ function CustomObserverComponent() {
     const findings = runRuleOnCode(observerCleanupRule, code);
     assert.equal(findings.length, 0, "Custom class ResizeObserver should not be mistaken for DOM observer");
   });
+
+  test("does not flag ResizeObserver inside local custom useEffect function", () => {
+    const code = `
+function useEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component() {
+  useEffect(() => {
+    const ro = new ResizeObserver(() => {});
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(observerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag ResizeObserver inside local custom useLayoutEffect function", () => {
+    const code = `
+function useLayoutEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component() {
+  useLayoutEffect(() => {
+    const ro = new ResizeObserver(() => {});
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(observerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag ResizeObserver inside customEffect imported from local file", () => {
+    const code = `
+import { useEffect as customEffect } from './local-hooks';
+function Component() {
+  customEffect(() => {
+    const ro = new ResizeObserver(() => {});
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(observerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("flags ResizeObserver inside aliased React useEffect import", () => {
+    const code = `
+import { useEffect as effect } from 'react';
+function Component() {
+  effect(() => {
+    const ro = new ResizeObserver(() => {});
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(observerCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "browser/observer-cleanup");
+  });
+
+  test("flags ResizeObserver inside React.useEffect namespace call", () => {
+    const code = `
+import * as React from 'react';
+function Component() {
+  React.useEffect(() => {
+    const ro = new ResizeObserver(() => {});
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(observerCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "browser/observer-cleanup");
+  });
 });

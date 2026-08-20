@@ -1471,4 +1471,59 @@ function processName(name: string) {
       const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
       assert.equal(findings.length, 1);
     });
+
+    test("does not flag React state indexing when useState is imported with alias from react", () => {
+      const code = `
+  import { useState as stateHook } from 'react';
+  const STEPS: ({ title: string } | undefined)[] = [
+    { title: 'Step 1' },
+    { title: 'Step 2' },
+  ];
+  function Component() {
+    const [step, setStep] = stateHook(0);
+    const current = STEPS[step]!;
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("flags state indexing when custom local function useState is defined", () => {
+      const code = `
+  function useState<T>(x: T) {
+    return [x, (val: T) => {}] as const;
+  }
+  const STEPS: ({ title: string } | undefined)[] = [
+    { title: 'Step 1' },
+    { title: 'Step 2' },
+  ];
+  function Component() {
+    const [step, setStep] = useState(0);
+    const current = STEPS[step]!;
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+      assert.equal(findings[0]?.ruleId, "typescript/non-null-assertion-risk");
+    });
+
+    test("flags state indexing when useState is imported from custom non-react module", () => {
+      const code = `
+  import { useState } from './custom-hooks';
+  const STEPS: ({ title: string } | undefined)[] = [
+    { title: 'Step 1' },
+    { title: 'Step 2' },
+  ];
+  function Component() {
+    const [step, setStep] = useState(0);
+    const current = STEPS[step]!;
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+      assert.equal(findings[0]?.ruleId, "typescript/non-null-assertion-risk");
+    });
 });

@@ -349,4 +349,102 @@ function BootComponent() {
     const findings = runRuleOnCode(timerCleanupRule, code);
     assert.equal(findings.length, 1);
   });
+
+  test("does not flag setInterval inside local custom useEffect function", () => {
+    const code = `
+function useEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component() {
+  useEffect(() => {
+    setInterval(() => {}, 1000);
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag setInterval inside local custom useLayoutEffect function", () => {
+    const code = `
+function useLayoutEffect(cb: () => void, deps?: unknown[]) {
+  cb();
+}
+function Component() {
+  useLayoutEffect(() => {
+    setInterval(() => {}, 1000);
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag setInterval inside customEffect imported from local file", () => {
+    const code = `
+import { useEffect as customEffect } from './local-hooks';
+function Component() {
+  customEffect(() => {
+    setInterval(() => {}, 1000);
+  });
+}
+    `.trim();
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("flags setInterval inside aliased React useEffect import", () => {
+    const code = `
+import { useEffect as effect } from 'react';
+function Component() {
+  effect(() => {
+    setInterval(() => {}, 1000);
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "browser/timer-cleanup");
+  });
+
+  test("flags setInterval inside React.useEffect namespace call", () => {
+    const code = `
+import * as React from 'react';
+function Component() {
+  React.useEffect(() => {
+    setInterval(() => {}, 1000);
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "browser/timer-cleanup");
+  });
+  test("does not flag setTimeout inside useCallback", () => {
+    const code = `
+import { useCallback } from 'react';
+function Component() {
+  const handler = useCallback(() => {
+    setTimeout(() => {
+      console.log('delayed action');
+    }, 500);
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not flag setInterval inside aliased useCallback", () => {
+    const code = `
+import { useCallback as cb } from 'react';
+function Component() {
+  const handler = cb(() => {
+    const id = setInterval(() => {}, 1000);
+  }, []);
+}
+    `.trim();
+    const findings = runRuleOnCode(timerCleanupRule, code);
+    assert.equal(findings.length, 0);
+  });
 });
