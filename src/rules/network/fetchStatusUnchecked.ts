@@ -1,5 +1,7 @@
 import type * as tsType from "typescript";
 import { getNodeSourceRange, isDOMGlobal } from "../../engine/symbols.js";
+import { unwrapExpression } from "../../analysis/values.js";
+import { hasVariableReassignment, statementExitsControlFlow } from "../../analysis/controlFlow.js";
 import type { Rule, RuleContext } from "../../core/types.js";
 
 type StatusCheckPolarity = "positive" | "negative";
@@ -13,14 +15,6 @@ const BODY_CONSUMPTION_METHODS: Record<string, true> = {
   bytes: true,
 };
 
-function unwrapParens(expr: tsType.Expression, ts: typeof tsType): tsType.Expression {
-  let cur = expr;
-  while (ts.isParenthesizedExpression(cur)) {
-    cur = cur.expression;
-  }
-  return cur;
-}
-
 function isMatchingTarget(
   expr: tsType.Expression,
   targetSymbol: tsType.Symbol | undefined,
@@ -28,7 +22,7 @@ function isMatchingTarget(
   ts: typeof tsType,
   checker: tsType.TypeChecker
 ): boolean {
-  const unwrapped = unwrapParens(expr, ts);
+  const unwrapped = unwrapExpression(expr, ts);
   if (!ts.isIdentifier(unwrapped)) return false;
   if (targetSymbol) {
     let sym = checker.getSymbolAtLocation(unwrapped);
@@ -37,7 +31,7 @@ function isMatchingTarget(
         sym = checker.getAliasedSymbol(sym);
       } catch {}
     }
-    if (sym && sym === targetSymbol) return true;
+    return sym === targetSymbol;
   }
   return unwrapped.text === targetName;
 }
@@ -49,11 +43,11 @@ function classifyStatusCheck(
   ts: typeof tsType,
   checker: tsType.TypeChecker
 ): StatusCheckPolarity | undefined {
-  const expr = unwrapParens(rawExpr, ts);
+  const expr = unwrapExpression(rawExpr, ts);
 
   // 1. !res.ok -> negative
   if (ts.isPrefixUnaryExpression(expr) && expr.operator === ts.SyntaxKind.ExclamationToken) {
-    const inner = unwrapParens(expr.operand, ts);
+    const inner = unwrapExpression(expr.operand, ts);
     if (ts.isPropertyAccessExpression(inner) && inner.name.text === "ok") {
       if (isMatchingTarget(inner.expression, targetSymbol, targetName, ts, checker)) {
         return "negative";
@@ -99,8 +93,8 @@ function classifyStatusCheck(
     ) {
       const isEq = op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsEqualsToken;
 
-      const left = unwrapParens(expr.left, ts);
-      const right = unwrapParens(expr.right, ts);
+      const left = unwrapExpression(expr.left, ts);
+      const right = unwrapExpression(expr.right, ts);
 
       let propAccess: tsType.PropertyAccessExpression | undefined;
       let otherSide: tsType.Expression | undefined;
@@ -144,8 +138,8 @@ function classifyStatusCheck(
       op === ts.SyntaxKind.GreaterThanToken ||
       op === ts.SyntaxKind.GreaterThanEqualsToken
     ) {
-      const left = unwrapParens(expr.left, ts);
-      const right = unwrapParens(expr.right, ts);
+      const left = unwrapExpression(expr.left, ts);
+      const right = unwrapExpression(expr.right, ts);
       if (
         ts.isPropertyAccessExpression(left) &&
         left.name.text === "status" &&
@@ -167,61 +161,6 @@ function classifyStatusCheck(
   return undefined;
 }
 
-function statementExits(stmt: tsType.Statement, ts: typeof tsType): boolean {
-  if (
-    ts.isReturnStatement(stmt) ||
-    ts.isThrowStatement(stmt) ||
-    ts.isBreakStatement(stmt) ||
-    ts.isContinueStatement(stmt)
-  ) {
-    return true;
-  }
-  if (ts.isBlock(stmt)) {
-    const stmts = stmt.statements;
-    if (stmts.length === 0) return false;
-    const last = stmts[stmts.length - 1];
-    return last !== undefined && statementExits(last, ts);
-  }
-  return false;
-}
-
-function isVariableReassignedInRange(
-  scope: tsType.Node,
-  targetSymbol: tsType.Symbol | undefined,
-  targetName: string,
-  startPos: number,
-  endPos: number,
-  ts: typeof tsType,
-  checker: tsType.TypeChecker
-): boolean {
-  let reassigned = false;
-
-  function walk(n: tsType.Node) {
-    if (reassigned) return;
-    const nPos = n.getStart();
-    if (nPos >= startPos && nPos <= endPos) {
-      if (ts.isBinaryExpression(n)) {
-        const op = n.operatorToken.kind;
-        if (
-          op === ts.SyntaxKind.EqualsToken ||
-          op === ts.SyntaxKind.PlusEqualsToken ||
-          op === ts.SyntaxKind.QuestionQuestionEqualsToken
-        ) {
-          const left = unwrapParens(n.left, ts);
-          if (isMatchingTarget(left, targetSymbol, targetName, ts, checker)) {
-            reassigned = true;
-            return;
-          }
-        }
-      }
-    }
-    n.forEachChild(walk);
-  }
-
-  walk(scope);
-  return reassigned;
-}
-
 function isBodyConsumptionDominatedByCheck(
   consumptionNode: tsType.Node,
   resDeclNode: tsType.VariableDeclaration,
@@ -231,63 +170,38 @@ function isBodyConsumptionDominatedByCheck(
   ts: typeof tsType,
   checker: tsType.TypeChecker
 ): boolean {
+  const isConst = (resDeclNode.parent.flags & ts.NodeFlags.Const) !== 0;
+
+  function isReassigned(startPos: number, endPos: number): boolean {
+    if (isConst) return false;
+    return hasVariableReassignment(scope, targetName, targetSymbol, ts, checker, endPos, startPos);
+  }
+
   // 1. Ancestor branch checks
   let curr: tsType.Node = consumptionNode;
   while (curr.parent && curr !== scope) {
     const parent: tsType.Node = curr.parent;
 
     if (ts.isIfStatement(parent)) {
-      if (parent.thenStatement === curr) {
-        const pol = classifyStatusCheck(parent.expression, targetSymbol, targetName, ts, checker);
-        if (pol === "positive") {
-          if (
-            !isVariableReassignedInRange(
-              scope,
-              targetSymbol,
-              targetName,
-              parent.getStart(),
-              consumptionNode.getStart(),
-              ts,
-              checker
-            )
-          ) {
-            return true;
-          }
-        }
-      } else if (parent.elseStatement === curr) {
-        const pol = classifyStatusCheck(parent.expression, targetSymbol, targetName, ts, checker);
-        if (pol === "negative") {
-          if (
-            !isVariableReassignedInRange(
-              scope,
-              targetSymbol,
-              targetName,
-              parent.getStart(),
-              consumptionNode.getStart(),
-              ts,
-              checker
-            )
-          ) {
-            return true;
-          }
+      const expected = parent.thenStatement === curr ? "positive" : parent.elseStatement === curr ? "negative" : undefined;
+      if (expected && classifyStatusCheck(parent.expression, targetSymbol, targetName, ts, checker) === expected) {
+        if (!isReassigned(parent.getStart(), consumptionNode.getStart())) {
+          return true;
         }
       }
     }
 
     if (ts.isConditionalExpression(parent)) {
-      if (parent.whenTrue === curr) {
-        const pol = classifyStatusCheck(parent.condition, targetSymbol, targetName, ts, checker);
-        if (pol === "positive") return true;
-      } else if (parent.whenFalse === curr) {
-        const pol = classifyStatusCheck(parent.condition, targetSymbol, targetName, ts, checker);
-        if (pol === "negative") return true;
+      const expected = parent.whenTrue === curr ? "positive" : parent.whenFalse === curr ? "negative" : undefined;
+      if (expected && classifyStatusCheck(parent.condition, targetSymbol, targetName, ts, checker) === expected) {
+        return true;
       }
     }
 
     if (ts.isCaseClause(parent)) {
       const switchStmt = parent.parent?.parent;
       if (switchStmt && ts.isSwitchStatement(switchStmt)) {
-        const switchExpr = unwrapParens(switchStmt.expression, ts);
+        const switchExpr = unwrapExpression(switchStmt.expression, ts);
         if (
           ts.isPropertyAccessExpression(switchExpr) &&
           switchExpr.name.text === "status" &&
@@ -324,26 +238,13 @@ function isBodyConsumptionDominatedByCheck(
         const idx = stmts.indexOf(stmtContainingConsumption);
         for (let i = 0; i < idx; i++) {
           const prevStmt = stmts[i];
-          if (!prevStmt) continue;
-          if (prevStmt.getStart() < resDeclNode.getStart()) continue;
+          if (!prevStmt || prevStmt.getStart() < resDeclNode.getStart()) continue;
 
           if (ts.isIfStatement(prevStmt)) {
             const pol = classifyStatusCheck(prevStmt.expression, targetSymbol, targetName, ts, checker);
-            if (pol === "negative") {
-              if (statementExits(prevStmt.thenStatement, ts) && !prevStmt.elseStatement) {
-                if (
-                  !isVariableReassignedInRange(
-                    scope,
-                    targetSymbol,
-                    targetName,
-                    prevStmt.getEnd(),
-                    consumptionNode.getStart(),
-                    ts,
-                    checker
-                  )
-                ) {
-                  return true;
-                }
+            if (pol === "negative" && statementExitsControlFlow(prevStmt.thenStatement, ts) && !prevStmt.elseStatement) {
+              if (!isReassigned(prevStmt.getEnd(), consumptionNode.getStart())) {
+                return true;
               }
             }
           }

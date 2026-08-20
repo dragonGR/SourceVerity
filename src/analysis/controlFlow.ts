@@ -10,7 +10,7 @@ export interface GuardCheckResult {
 /**
  * Checks if a statement definitely exits control flow (return, throw, break, continue).
  */
-function statementExitsControlFlow(stmt: tsType.Statement, ts: typeof tsType): boolean {
+export function statementExitsControlFlow(stmt: tsType.Statement, ts: typeof tsType): boolean {
   if (
     ts.isReturnStatement(stmt) ||
     ts.isThrowStatement(stmt) ||
@@ -51,13 +51,14 @@ function isAssignmentOperator(kind: tsType.SyntaxKind, ts: typeof tsType): boole
   );
 }
 
-function hasVariableReassignment(
+export function hasVariableReassignment(
   node: tsType.Node,
   targetName: string,
   targetSymbol: tsType.Symbol | undefined,
   ts: typeof tsType,
   checker?: tsType.TypeChecker | undefined,
-  beforePos?: number
+  beforePos?: number,
+  afterPos?: number
 ): boolean {
   let reassigned = false;
 
@@ -71,11 +72,11 @@ function hasVariableReassignment(
           // ignore
         }
       }
-      if (sym && sym === targetSymbol) {
-        return true;
+      if (sym) {
+        return sym === targetSymbol;
       }
     }
-    return ident.text === targetName;
+    return targetSymbol === undefined && ident.text === targetName;
   }
 
   function checkLeftAssignment(leftExpr: tsType.Expression): boolean {
@@ -111,9 +112,14 @@ function hasVariableReassignment(
 
   function walk(n: tsType.Node) {
     if (reassigned) return;
-    if (beforePos !== undefined && n.pos >= beforePos) return;
+    const nStart = n.getStart();
+    const nEnd = n.getEnd();
+    if (beforePos !== undefined && nStart > beforePos) return;
+    if (afterPos !== undefined && nEnd < afterPos) return;
 
-    if (ts.isBinaryExpression(n) && isAssignmentOperator(n.operatorToken.kind, ts)) {
+    const inRange = (afterPos === undefined || nStart >= afterPos) && (beforePos === undefined || nStart <= beforePos);
+
+    if (inRange && ts.isBinaryExpression(n) && isAssignmentOperator(n.operatorToken.kind, ts)) {
       if (checkLeftAssignment(n.left)) {
         reassigned = true;
         return;
@@ -121,6 +127,7 @@ function hasVariableReassignment(
     }
 
     if (
+      inRange &&
       (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
       (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)
     ) {
