@@ -585,4 +585,298 @@ function processName(name: string) {
       assert.equal(findings.length, 1);
       assert.equal(findings[0]?.ruleId, "typescript/non-null-assertion-risk");
     });
+
+    // --- Construction cardinality proofs & unsafe twins ---
+
+    test("does not flag arr[n]! when constructed with 1 initial element and n guaranteed pushes", () => {
+      const code = `
+  function computeAmplitudes(numLayers: number) {
+    const amplitudes: (number | undefined)[] = [1.0];
+    for (let i = 0; i < numLayers; i++) {
+      amplitudes.push(amplitudes[amplitudes.length - 1]! * 0.35);
+    }
+    const last = amplitudes[numLayers]!;
+    return last;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("near-miss: flags arr[n]! when pushes inside loop are conditional", () => {
+      const code = `
+  function computeAmplitudes(numLayers: number, cond: boolean) {
+    const amplitudes: (number | undefined)[] = [1.0];
+    for (let i = 0; i < numLayers; i++) {
+      if (cond) {
+        amplitudes.push(0.5);
+      }
+    }
+    const last = amplitudes[numLayers]!;
+    return last;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+      assert.equal(findings[0]?.ruleId, "typescript/non-null-assertion-risk");
+    });
+
+    test("near-miss: flags arr[n]! when loop performs too few pushes (n - 1)", () => {
+      const code = `
+  function computeAmplitudes(numLayers: number) {
+    const amplitudes: (number | undefined)[] = [1.0];
+    for (let i = 0; i < numLayers - 1; i++) {
+      amplitudes.push(0.5);
+    }
+    const last = amplitudes[numLayers]!;
+    return last;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags arr[n]! when loop contains continue statement", () => {
+      const code = `
+  function computeAmplitudes(numLayers: number) {
+    const amplitudes: (number | undefined)[] = [1.0];
+    for (let i = 0; i < numLayers; i++) {
+      if (i === 2) continue;
+      amplitudes.push(0.5);
+    }
+    const last = amplitudes[numLayers]!;
+    return last;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags arr[n]! when array is mutated (pop) after construction loop", () => {
+      const code = `
+  function computeAmplitudes(numLayers: number) {
+    const amplitudes: (number | undefined)[] = [1.0];
+    for (let i = 0; i < numLayers; i++) {
+      amplitudes.push(0.5);
+    }
+    amplitudes.pop();
+    const last = amplitudes[numLayers]!;
+    return last;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags arr[n]! when initial array is empty (0 initial elements)", () => {
+      const code = `
+  function computeAmplitudes(numLayers: number) {
+    const amplitudes: (number | undefined)[] = [];
+    for (let i = 0; i < numLayers; i++) {
+      amplitudes.push(0.5);
+    }
+    const last = amplitudes[numLayers]!;
+    return last;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    // --- Search index provenance proofs & unsafe twins ---
+
+    test("does not flag copy[victimIdx]! when victimIdx originates from loop over prev with exit guard", () => {
+      const code = `
+  interface Block { pages: string[]; }
+  function runGC(prev: (Block | undefined)[]) {
+    let victimIdx = -1;
+    let maxInvalid = 0;
+    for (let i = 0; i < prev.length; i++) {
+      const inv = prev[i]!.pages.length;
+      if (inv > maxInvalid) {
+        maxInvalid = inv;
+        victimIdx = i;
+      }
+    }
+    if (victimIdx === -1 || maxInvalid === 0) {
+      return prev;
+    }
+    const copy = prev.map(b => (b ? { ...b, pages: [...b.pages] } : undefined));
+    const victim = copy[victimIdx]!;
+    return victim;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("near-miss: flags copy[idx]! when idx receives external unverified assignment", () => {
+      const code = `
+  interface Block { pages: string[]; }
+  function runGC(prev: (Block | undefined)[], externalNum: number) {
+    let victimIdx = -1;
+    for (let i = 0; i < prev.length; i++) {
+      victimIdx = externalNum;
+    }
+    if (victimIdx === -1) {
+      return prev;
+    }
+    const copy = prev.map(b => (b ? { ...b, pages: [...b.pages] } : undefined));
+    const victim = copy[victimIdx]!;
+    return victim;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags copy[idx]! when idx is searched on different array", () => {
+      const code = `
+  interface Block { pages: string[]; }
+  function runGC(prev: (Block | undefined)[], other: (Block | undefined)[]) {
+    let victimIdx = -1;
+    for (let i = 0; i < other.length; i++) {
+      victimIdx = i;
+    }
+    if (victimIdx === -1) {
+      return prev;
+    }
+    const copy = prev.map(b => (b ? { ...b, pages: [...b.pages] } : undefined));
+    const victim = copy[victimIdx]!;
+    return victim;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags copy[idx]! when array is mutated after guard", () => {
+      const code = `
+  interface Block { pages: string[]; }
+  function runGC(prev: (Block | undefined)[]) {
+    let victimIdx = -1;
+    for (let i = 0; i < prev.length; i++) {
+      victimIdx = i;
+    }
+    if (victimIdx === -1) {
+      return prev;
+    }
+    const copy = prev.map(b => (b ? { ...b, pages: [...b.pages] } : undefined));
+    copy.splice(0);
+    const victim = copy[victimIdx]!;
+    return victim;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    // --- Nested matrix shape & loop construction proofs & unsafe twins ---
+
+    test("does not flag coeffs[0]! when constructed via deterministic loop with >= 1 iterations", () => {
+      const code = `
+  function generateDCTCoeffs() {
+    const coeffs: (number[] | undefined)[] = [];
+    for (let r = 0; r < 8; r++) {
+      const row: number[] = [];
+      for (let c = 0; c < 8; c++) {
+        row.push(c);
+      }
+      coeffs.push(row);
+    }
+    coeffs[0]![0] = 952;
+    return coeffs;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("near-miss: flags coeffs[0]! when array is declared empty without construction loop", () => {
+      const code = `
+  function generateDCTCoeffs() {
+    const coeffs: (number[] | undefined)[] = [];
+    coeffs[0]![0] = 952;
+    return coeffs;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags coeffs[0]! when construction loop has 0 iterations", () => {
+      const code = `
+  function generateDCTCoeffs() {
+    const coeffs: (number[] | undefined)[] = [];
+    for (let r = 0; r < 0; r++) {
+      coeffs.push([1]);
+    }
+    coeffs[0]![0] = 952;
+    return coeffs;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("near-miss: flags coeffs[0]! when array comes from unknown factory function", () => {
+      const code = `
+  declare function makeMatrix(r: number, c: number): (number[] | undefined)[];
+  function generateDCTCoeffs() {
+    const coeffs = makeMatrix(8, 8);
+    coeffs[0]![0] = 952;
+    return coeffs;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    // --- Compound loop condition proofs & unsafe twins ---
+
+    test("does not flag copy[ob]! in for loop with compound condition (ob < copy.length && !placed)", () => {
+      const code = `
+  interface Block { pages: string[]; }
+  function place(copy: (Block | undefined)[], placed: boolean) {
+    for (let ob = 0; ob < copy.length && !placed; ob++) {
+      const other = copy[ob]!;
+      return other;
+    }
+    return null;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("near-miss: flags copy[ob]! in compound loop condition indexing different array", () => {
+      const code = `
+  interface Block { pages: string[]; }
+  function place(copy: (Block | undefined)[], other: (Block | undefined)[], placed: boolean) {
+    for (let ob = 0; ob < other.length && !placed; ob++) {
+      const item = copy[ob]!;
+      return item;
+    }
+    return null;
+  }
+      `.trim();
+
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
 });

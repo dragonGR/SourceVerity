@@ -442,87 +442,100 @@ function isLoopOrCallbackBoundedIndex(
     // 1. Enclosing classic ForStatement: for (let i = 0; i < arr.length - K; i++)
     if (ts.isForStatement(curr.parent)) {
       const forStmt = curr.parent;
-      if (forStmt.condition && ts.isBinaryExpression(forStmt.condition)) {
-        const cond = forStmt.condition;
-        const left = unwrapExpression(cond.left, ts);
-        if (ts.isIdentifier(left) && left.text === indexInfo.baseText) {
-          const op = cond.operatorToken.kind;
-          const right = unwrapExpression(cond.right, ts);
-
-          // Parse loop start index (e.g. let i = 0 or let i = 1)
-          let initVal = 0;
-          if (forStmt.initializer && ts.isVariableDeclarationList(forStmt.initializer)) {
-            const decl = forStmt.initializer.declarations[0];
-            if (decl && decl.initializer && ts.isNumericLiteral(decl.initializer)) {
-              initVal = Number(decl.initializer.text);
-            }
+      if (forStmt.condition) {
+        const conjuncts: tsType.BinaryExpression[] = [];
+        function collectConjuncts(e: tsType.Expression) {
+          const u = unwrapExpression(e, ts);
+          if (ts.isBinaryExpression(u) && u.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+            collectConjuncts(u.left);
+            collectConjuncts(u.right);
+          } else if (ts.isBinaryExpression(u)) {
+            conjuncts.push(u);
           }
+        }
+        collectConjuncts(forStmt.condition);
 
-          // Condition: i < array.length (K = 0)
-          if (
-            op === ts.SyntaxKind.LessThanToken &&
-            ts.isPropertyAccessExpression(right) &&
-            right.name.text === "length"
-          ) {
-            const condArr = normalizeArrayTarget(right.expression, ts, checker);
-            if (condArr && condArr.text === arrayTarget.text) {
-              if (initVal + indexInfo.offset >= 0 && indexInfo.offset <= 0) {
-                return {
-                  isGuarded: true,
-                  evidence: `Index '${indexInfo.baseText}' is bounded by enclosing loop condition '${cond.getText()}'.`,
-                };
+        for (const cond of conjuncts) {
+          const left = unwrapExpression(cond.left, ts);
+          if (ts.isIdentifier(left) && left.text === indexInfo.baseText) {
+            const op = cond.operatorToken.kind;
+            const right = unwrapExpression(cond.right, ts);
+
+            // Parse loop start index (e.g. let i = 0 or let i = 1)
+            let initVal = 0;
+            if (forStmt.initializer && ts.isVariableDeclarationList(forStmt.initializer)) {
+              const decl = forStmt.initializer.declarations[0];
+              if (decl && decl.initializer && ts.isNumericLiteral(decl.initializer)) {
+                initVal = Number(decl.initializer.text);
               }
             }
-          }
 
-          // Condition: i < array.length - K (allows 0 <= offset <= K)
-          if (
-            op === ts.SyntaxKind.LessThanToken &&
-            ts.isBinaryExpression(right) &&
-            right.operatorToken.kind === ts.SyntaxKind.MinusToken
-          ) {
-            const rightLeft = unwrapExpression(right.left, ts);
-            const rightRight = unwrapExpression(right.right, ts);
+            // Condition: i < array.length (K = 0)
             if (
-              ts.isPropertyAccessExpression(rightLeft) &&
-              rightLeft.name.text === "length" &&
-              ts.isNumericLiteral(rightRight)
+              op === ts.SyntaxKind.LessThanToken &&
+              ts.isPropertyAccessExpression(right) &&
+              right.name.text === "length"
             ) {
-              const k = Number(rightRight.text);
-              const condArr = normalizeArrayTarget(rightLeft.expression, ts, checker);
+              const condArr = normalizeArrayTarget(right.expression, ts, checker);
               if (condArr && condArr.text === arrayTarget.text) {
-                if (initVal + indexInfo.offset >= 0 && indexInfo.offset >= 0 && indexInfo.offset <= k) {
+                if (initVal + indexInfo.offset >= 0 && indexInfo.offset <= 0) {
                   return {
                     isGuarded: true,
-                    evidence: `Index '${indexInfo.baseText}${indexInfo.offset ? ` + ${indexInfo.offset}` : ""}' is bounded by enclosing loop condition '${cond.getText()}'.`,
+                    evidence: `Index '${indexInfo.baseText}' is bounded by enclosing loop condition '${cond.getText()}'.`,
                   };
                 }
               }
             }
-          }
 
-          // Condition: i <= array.length - 1 - K (allows 0 <= offset <= K)
-          if (
-            op === ts.SyntaxKind.LessThanEqualsToken &&
-            ts.isBinaryExpression(right) &&
-            right.operatorToken.kind === ts.SyntaxKind.MinusToken
-          ) {
-            const rightLeft = unwrapExpression(right.left, ts);
-            const rightRight = unwrapExpression(right.right, ts);
+            // Condition: i < array.length - K (allows 0 <= offset <= K)
             if (
-              ts.isPropertyAccessExpression(rightLeft) &&
-              rightLeft.name.text === "length" &&
-              ts.isNumericLiteral(rightRight)
+              op === ts.SyntaxKind.LessThanToken &&
+              ts.isBinaryExpression(right) &&
+              right.operatorToken.kind === ts.SyntaxKind.MinusToken
             ) {
-              const minusVal = Number(rightRight.text);
-              const k = minusVal - 1;
-              const condArr = normalizeArrayTarget(rightLeft.expression, ts, checker);
-              if (condArr && condArr.text === arrayTarget.text) {
-                if (initVal + indexInfo.offset >= 0 && indexInfo.offset >= 0 && indexInfo.offset <= k) {
-                  return {
-                    isGuarded: true,
-                    evidence: `Index '${indexInfo.baseText}${indexInfo.offset ? ` + ${indexInfo.offset}` : ""}' is bounded by enclosing loop condition '${cond.getText()}'.`,
-                  };
+              const rightLeft = unwrapExpression(right.left, ts);
+              const rightRight = unwrapExpression(right.right, ts);
+              if (
+                ts.isPropertyAccessExpression(rightLeft) &&
+                rightLeft.name.text === "length" &&
+                ts.isNumericLiteral(rightRight)
+              ) {
+                const k = Number(rightRight.text);
+                const condArr = normalizeArrayTarget(rightLeft.expression, ts, checker);
+                if (condArr && condArr.text === arrayTarget.text) {
+                  if (initVal + indexInfo.offset >= 0 && indexInfo.offset >= 0 && indexInfo.offset <= k) {
+                    return {
+                      isGuarded: true,
+                      evidence: `Index '${indexInfo.baseText}${indexInfo.offset ? ` + ${indexInfo.offset}` : ""}' is bounded by enclosing loop condition '${cond.getText()}'.`,
+                    };
+                  }
+                }
+              }
+            }
+
+            // Condition: i <= array.length - 1 - K (allows 0 <= offset <= K)
+            if (
+              op === ts.SyntaxKind.LessThanEqualsToken &&
+              ts.isBinaryExpression(right) &&
+              right.operatorToken.kind === ts.SyntaxKind.MinusToken
+            ) {
+              const rightLeft = unwrapExpression(right.left, ts);
+              const rightRight = unwrapExpression(right.right, ts);
+              if (
+                ts.isPropertyAccessExpression(rightLeft) &&
+                rightLeft.name.text === "length" &&
+                ts.isNumericLiteral(rightRight)
+              ) {
+                const minusVal = Number(rightRight.text);
+                const k = minusVal - 1;
+                const condArr = normalizeArrayTarget(rightLeft.expression, ts, checker);
+                if (condArr && condArr.text === arrayTarget.text) {
+                  if (initVal + indexInfo.offset >= 0 && indexInfo.offset >= 0 && indexInfo.offset <= k) {
+                    return {
+                      isGuarded: true,
+                      evidence: `Index '${indexInfo.baseText}${indexInfo.offset ? ` + ${indexInfo.offset}` : ""}' is bounded by enclosing loop condition '${cond.getText()}'.`,
+                    };
+                  }
                 }
               }
             }
@@ -887,6 +900,640 @@ function isFindIndexBoundedIndex(
   return undefined;
 }
 /**
+ * Checks if a node or its subtrees contain mutating operations on the given array text/symbol.
+ */
+function hasArrayMutation(
+  node: tsType.Node,
+  arrayText: string,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined,
+  arraySymbol?: tsType.Symbol | undefined
+): boolean {
+  let mutated = false;
+  function check(n: tsType.Node) {
+    if (mutated) return;
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+      const target = normalizeArrayTarget(n.expression.expression, ts, checker);
+      if (target && (target.text === arrayText || (arraySymbol && target.symbol === arraySymbol))) {
+        const method = n.expression.name.text;
+        if (
+          method === "splice" ||
+          method === "pop" ||
+          method === "shift" ||
+          method === "unshift" ||
+          method === "push" ||
+          method === "fill" ||
+          method === "reverse" ||
+          method === "sort"
+        ) {
+          mutated = true;
+          return;
+        }
+      }
+    }
+    // a.length = ... or a = ...
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const left = unwrapExpression(n.left, ts);
+      if (ts.isPropertyAccessExpression(left) && left.name.text === "length") {
+        const target = normalizeArrayTarget(left.expression, ts, checker);
+        if (target && (target.text === arrayText || (arraySymbol && target.symbol === arraySymbol))) {
+          mutated = true;
+          return;
+        }
+      }
+      if (ts.isIdentifier(left) && left.text === arrayText) {
+        mutated = true;
+        return;
+      }
+    }
+    n.forEachChild(check);
+  }
+  check(node);
+  return mutated;
+}
+
+function containsControlFlowExit(body: tsType.Node, ts: typeof tsType): boolean {
+  let hasExit = false;
+  function check(n: tsType.Node) {
+    if (hasExit) return;
+    if (
+      ts.isBreakStatement(n) ||
+      ts.isContinueStatement(n) ||
+      ts.isReturnStatement(n) ||
+      ts.isThrowStatement(n) ||
+      ts.isYieldExpression(n)
+    ) {
+      hasExit = true;
+      return;
+    }
+    // Do not recurse into nested function bodies
+    if (ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n)) {
+      return;
+    }
+    n.forEachChild(check);
+  }
+  check(body);
+  return hasExit;
+}
+
+function countUnconditionalPushes(
+  body: tsType.Node,
+  arrayText: string,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined,
+  arraySymbol?: tsType.Symbol | undefined
+): number {
+  let conditionalPush = false;
+  let pushCalls = 0;
+
+  function scanNode(n: tsType.Node, insideConditional: boolean) {
+    if (conditionalPush) return;
+
+    if (
+      ts.isIfStatement(n) ||
+      ts.isSwitchStatement(n) ||
+      ts.isConditionalExpression(n) ||
+      ts.isTryStatement(n) ||
+      ts.isWhileStatement(n) ||
+      ts.isDoStatement(n) ||
+      ts.isForStatement(n) ||
+      ts.isForOfStatement(n) ||
+      ts.isForInStatement(n)
+    ) {
+      n.forEachChild((c) => scanNode(c, true));
+      return;
+    }
+
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+      const target = normalizeArrayTarget(n.expression.expression, ts, checker);
+      if (target && (target.text === arrayText || (arraySymbol && target.symbol === arraySymbol))) {
+        if (n.expression.name.text === "push") {
+          if (insideConditional) {
+            conditionalPush = true;
+            return;
+          }
+          pushCalls += Math.max(1, n.arguments.length);
+        }
+      }
+    }
+
+    n.forEachChild((c) => scanNode(c, insideConditional));
+  }
+
+  scanNode(body, false);
+  if (conditionalPush) return 0;
+  return pushCalls;
+}
+
+function hasMutationBeforeNode(
+  statementNode: tsType.Node,
+  targetNode: tsType.Node,
+  arrayText: string,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined,
+  arraySymbol?: tsType.Symbol | undefined
+): boolean {
+  if (statementNode === targetNode) return false;
+  let mutatedBefore = false;
+  function check(n: tsType.Node) {
+    if (mutatedBefore) return;
+    if (n.pos >= targetNode.pos) return;
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+      const target = normalizeArrayTarget(n.expression.expression, ts, checker);
+      if (target && (target.text === arrayText || (arraySymbol && target.symbol === arraySymbol))) {
+        const method = n.expression.name.text;
+        if (
+          method === "splice" ||
+          method === "pop" ||
+          method === "shift" ||
+          method === "unshift" ||
+          method === "push" ||
+          method === "fill" ||
+          method === "reverse" ||
+          method === "sort"
+        ) {
+          mutatedBefore = true;
+          return;
+        }
+      }
+    }
+    n.forEachChild(check);
+  }
+  check(statementNode);
+  return mutatedBefore;
+}
+
+/**
+ * Checks if an array is locally constructed with a known initial length and guaranteed loop pushes,
+ * proving that an element access is strictly in-bounds.
+ */
+function isConstructedArrayCardinalityBoundedIndex(
+  node: tsType.NonNullExpression,
+  operand: tsType.ElementAccessExpression,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): GuardCheckResult | undefined {
+  const arrayTarget = normalizeArrayTarget(operand.expression, ts, checker);
+  if (!arrayTarget) return undefined;
+
+  const unwrappedArray = unwrapExpression(operand.expression, ts);
+  if (!ts.isIdentifier(unwrappedArray)) return undefined;
+
+  let symbol = checker?.getSymbolAtLocation(unwrappedArray);
+  if (!symbol) return undefined;
+  if (symbol.flags & ts.SymbolFlags.Alias) {
+    try {
+      symbol = checker?.getAliasedSymbol(symbol);
+    } catch {
+      // ignore
+    }
+  }
+
+  const decls = symbol?.getDeclarations();
+  if (!decls || decls.length === 0) return undefined;
+
+  const decl = decls[0];
+  if (!decl || !ts.isVariableDeclaration(decl) || !decl.initializer) return undefined;
+
+  const init = unwrapExpression(decl.initializer, ts);
+  if (!ts.isArrayLiteralExpression(init)) return undefined;
+
+  const initialLength = init.elements.length;
+
+  // Find the block or source file containing the declaration
+  let declScope: tsType.Node = decl;
+  while (declScope.parent && !ts.isBlock(declScope.parent) && !ts.isSourceFile(declScope.parent)) {
+    declScope = declScope.parent;
+  }
+  const container = declScope.parent;
+  if (!container || (!ts.isBlock(container) && !ts.isSourceFile(container))) return undefined;
+
+  const stmts = container.statements;
+  const declIdx = stmts.indexOf(declScope as tsType.Statement);
+  if (declIdx === -1) return undefined;
+
+  // Find the top-level statement in `container` that contains `node`
+  let nodeScope: tsType.Node = node;
+  while (nodeScope.parent && nodeScope.parent !== container) {
+    nodeScope = nodeScope.parent;
+  }
+  const targetIdx = stmts.indexOf(nodeScope as tsType.Statement);
+  if (targetIdx === -1 || targetIdx < declIdx) return undefined;
+
+  // Look for an intervening ForStatement that unconditionally pushes to arrayTarget
+  for (let sIdx = declIdx + 1; sIdx <= targetIdx; sIdx++) {
+    const candidateStmt = stmts[sIdx];
+    if (!candidateStmt) continue;
+
+    if (ts.isForStatement(candidateStmt)) {
+      const forStmt = candidateStmt;
+
+      // 1. Initializer: let i = 0
+      let initVal = 0;
+      let loopVarName: string | undefined;
+      if (forStmt.initializer && ts.isVariableDeclarationList(forStmt.initializer)) {
+        const d = forStmt.initializer.declarations[0];
+        if (d && ts.isIdentifier(d.name)) {
+          loopVarName = d.name.text;
+          if (d.initializer && ts.isNumericLiteral(d.initializer)) {
+            initVal = Number(d.initializer.text);
+          }
+        }
+      }
+      if (!loopVarName || initVal !== 0) continue;
+
+      // 2. Condition: i < N or i <= N - 1
+      if (!forStmt.condition) continue;
+      const cond = unwrapExpression(forStmt.condition, ts);
+      if (!ts.isBinaryExpression(cond)) continue;
+
+      const condLeft = unwrapExpression(cond.left, ts);
+      if (!ts.isIdentifier(condLeft) || condLeft.text !== loopVarName) continue;
+
+      const condOp = cond.operatorToken.kind;
+      const condRight = unwrapExpression(cond.right, ts);
+
+      let symbolicBoundText: string | undefined;
+      let constantBoundValue: number | undefined;
+
+      if (condOp === ts.SyntaxKind.LessThanToken) {
+        if (ts.isIdentifier(condRight)) {
+          symbolicBoundText = condRight.text;
+        } else if (ts.isNumericLiteral(condRight)) {
+          constantBoundValue = Number(condRight.text);
+        }
+      } else if (condOp === ts.SyntaxKind.LessThanEqualsToken) {
+        if (ts.isBinaryExpression(condRight) && condRight.operatorToken.kind === ts.SyntaxKind.MinusToken) {
+          const rLeft = unwrapExpression(condRight.left, ts);
+          const rRight = unwrapExpression(condRight.right, ts);
+          if (ts.isNumericLiteral(rRight) && rRight.text === "1") {
+            if (ts.isIdentifier(rLeft)) {
+              symbolicBoundText = rLeft.text;
+            } else if (ts.isNumericLiteral(rLeft)) {
+              constantBoundValue = Number(rLeft.text);
+            }
+          }
+        }
+      }
+
+      if (!symbolicBoundText && constantBoundValue === undefined) continue;
+
+      // 3. Loop body invariant: no control flow exits (break, continue, return, throw)
+      if (containsControlFlowExit(forStmt.statement, ts)) continue;
+
+      // 4. Count unconditional pushes to arrayTarget in the loop body
+      const pushCount = countUnconditionalPushes(forStmt.statement, arrayTarget.text, ts, checker, symbol);
+      if (pushCount === 0) continue;
+
+      // 5. Ensure no mutating operations on arrayTarget occurred between forStmt and nodeScope
+      let hasInterveningMutation = false;
+      for (let m = sIdx + 1; m < targetIdx; m++) {
+        const stmt = stmts[m];
+        if (stmt && hasArrayMutation(stmt, arrayTarget.text, ts, checker, symbol)) {
+          hasInterveningMutation = true;
+          break;
+        }
+      }
+      if (hasInterveningMutation) continue;
+
+      // Check if inside nodeScope itself (before node) there is a mutation
+      if (hasMutationBeforeNode(nodeScope, node, arrayTarget.text, ts, checker, symbol)) {
+        continue;
+      }
+
+      const indexArg = unwrapExpression(operand.argumentExpression, ts);
+
+      // Case A: Symbolic index matching loop bound N (e.g. amplitudes[numLayers]!)
+      // Requires initialLength >= 1 and pushCount >= 1
+      if (symbolicBoundText && ts.isIdentifier(indexArg) && indexArg.text === symbolicBoundText) {
+        if (initialLength >= 1 && pushCount >= 1) {
+          return {
+            isGuarded: true,
+            evidence: `Array '${arrayTarget.text}' is constructed with ${initialLength} initial element(s) and ${symbolicBoundText} guaranteed pushes, proving index '${symbolicBoundText}' is in-bounds.`,
+          };
+        }
+      }
+
+      // Case B: Literal numeric index matching constant loop bound C (e.g. coeffs[0]! where coeffs has 8 rows)
+      if (constantBoundValue !== undefined && ts.isNumericLiteral(indexArg)) {
+        const requestedIndex = Number(indexArg.text);
+        const guaranteedTotalLength = initialLength + constantBoundValue * pushCount;
+        if (Number.isInteger(requestedIndex) && requestedIndex >= 0 && requestedIndex < guaranteedTotalLength) {
+          return {
+            isGuarded: true,
+            evidence: `Array '${arrayTarget.text}' is constructed with guaranteed length ${guaranteedTotalLength}, proving index ${requestedIndex} is in-bounds.`,
+          };
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function isInitialNegativeOrUndefined(expr: tsType.Expression, ts: typeof tsType): boolean {
+  if (ts.isPrefixUnaryExpression(expr) && expr.operator === ts.SyntaxKind.MinusToken) {
+    if (ts.isNumericLiteral(expr.operand) && expr.operand.text === "1") {
+      return true;
+    }
+  }
+  if (expr.kind === ts.SyntaxKind.UndefinedKeyword || expr.kind === ts.SyntaxKind.NullKeyword) {
+    return true;
+  }
+  if (ts.isIdentifier(expr) && expr.text === "undefined") {
+    return true;
+  }
+  return false;
+}
+
+function isExitNegativeCheckForIndex(cond: tsType.Expression, indexName: string, ts: typeof tsType): boolean {
+  const disjuncts: tsType.Expression[] = [];
+  function collectOrs(e: tsType.Expression) {
+    const u = unwrapExpression(e, ts);
+    if (ts.isBinaryExpression(u) && u.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+      collectOrs(u.left);
+      collectOrs(u.right);
+    } else {
+      disjuncts.push(u);
+    }
+  }
+  collectOrs(cond);
+
+  return disjuncts.some((d) => {
+    const u = unwrapExpression(d, ts);
+    if (!ts.isBinaryExpression(u)) return false;
+    const left = unwrapExpression(u.left, ts);
+    const right = unwrapExpression(u.right, ts);
+    const op = u.operatorToken.kind;
+
+    // index === -1 or -1 === index
+    if (op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsEqualsToken) {
+      if (ts.isIdentifier(left) && left.text === indexName) {
+        if (ts.isPrefixUnaryExpression(right) && right.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(right.operand) && right.operand.text === "1") {
+          return true;
+        }
+      }
+      if (ts.isIdentifier(right) && right.text === indexName) {
+        if (ts.isPrefixUnaryExpression(left) && left.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(left.operand) && left.operand.text === "1") {
+          return true;
+        }
+      }
+    }
+
+    // index < 0 or index <= -1
+    if (op === ts.SyntaxKind.LessThanToken) {
+      if (ts.isIdentifier(left) && left.text === indexName && ts.isNumericLiteral(right) && right.text === "0") {
+        return true;
+      }
+    }
+    if (op === ts.SyntaxKind.LessThanEqualsToken) {
+      if (ts.isIdentifier(left) && left.text === indexName) {
+        if (ts.isPrefixUnaryExpression(right) && right.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(right.operand) && right.operand.text === "1") {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  });
+}
+
+/**
+ * Checks if an index variable originates exclusively from a bounded loop search over a source array,
+ * with a dominating guard proving non-negative return and matching target array.
+ */
+function isSearchProvenanceBoundedIndex(
+  node: tsType.NonNullExpression,
+  operand: tsType.ElementAccessExpression,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): GuardCheckResult | undefined {
+  const targetArray = normalizeArrayTarget(operand.expression, ts, checker);
+  if (!targetArray) return undefined;
+
+  const indexArg = unwrapExpression(operand.argumentExpression, ts);
+  if (!ts.isIdentifier(indexArg)) return undefined;
+
+  const indexName = indexArg.text;
+
+  let symbol = checker?.getSymbolAtLocation(indexArg);
+  if (!symbol) return undefined;
+  if (symbol.flags & ts.SymbolFlags.Alias) {
+    try {
+      symbol = checker?.getAliasedSymbol(symbol);
+    } catch {
+      // ignore
+    }
+  }
+
+  const decls = symbol?.getDeclarations();
+  if (!decls || decls.length === 0) return undefined;
+
+  const rawDecl = decls[0];
+  if (!rawDecl || !ts.isVariableDeclaration(rawDecl)) return undefined;
+  const varDecl: tsType.VariableDeclaration = rawDecl;
+  // Find the scope where index variable is declared
+  let scope: tsType.Node = varDecl;
+  while (scope.parent && !ts.isBlock(scope.parent) && !ts.isSourceFile(scope.parent)) {
+    scope = scope.parent;
+  }
+  const container = scope.parent;
+  if (!container || (!ts.isBlock(container) && !ts.isSourceFile(container))) return undefined;
+
+  // Collect all assignments to indexName in container
+  let sourceArrayText: string | undefined;
+  let sourceArraySymbol: tsType.Symbol | undefined;
+  let invalidAssignment = false;
+  let hasValidLoopAssignment = false;
+
+  function analyzeAssignments(n: tsType.Node) {
+    if (invalidAssignment) return;
+
+    // Check initializer of the declaration: let victimIdx = -1
+    if (n === varDecl) {
+      if (varDecl.initializer) {
+        const initVal = unwrapExpression(varDecl.initializer, ts);
+        if (!isInitialNegativeOrUndefined(initVal, ts)) {
+          invalidAssignment = true;
+          return;
+        }
+      }
+      return;
+    }
+
+    // Check binary assignments: victimIdx = ...
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const left = unwrapExpression(n.left, ts);
+      if (ts.isIdentifier(left) && left.text === indexName) {
+        const right = unwrapExpression(n.right, ts);
+
+        // Case 1: Reset value: -1, undefined, null
+        if (isInitialNegativeOrUndefined(right, ts)) {
+          return;
+        }
+
+        // Case 2: Loop variable assignment inside for (let i = 0; i < sourceArr.length; i++)
+        let forNode: tsType.Node = n;
+        let enclosingFor: tsType.ForStatement | undefined;
+        while (forNode.parent && forNode.parent !== container) {
+          if (ts.isForStatement(forNode.parent)) {
+            enclosingFor = forNode.parent;
+            break;
+          }
+          forNode = forNode.parent;
+        }
+
+        if (enclosingFor && enclosingFor.condition && ts.isBinaryExpression(enclosingFor.condition)) {
+          // Check that right is the loop variable
+          let loopVar: string | undefined;
+          if (enclosingFor.initializer && ts.isVariableDeclarationList(enclosingFor.initializer)) {
+            const d = enclosingFor.initializer.declarations[0];
+            if (d && ts.isIdentifier(d.name)) {
+              loopVar = d.name.text;
+            }
+          }
+
+          if (loopVar && ts.isIdentifier(right) && right.text === loopVar) {
+            // Check condition: loopVar < sourceArr.length
+            const cond = enclosingFor.condition;
+            const condLeft = unwrapExpression(cond.left, ts);
+            const condRight = unwrapExpression(cond.right, ts);
+            if (
+              ts.isIdentifier(condLeft) &&
+              condLeft.text === loopVar &&
+              cond.operatorToken.kind === ts.SyntaxKind.LessThanToken &&
+              ts.isPropertyAccessExpression(condRight) &&
+              condRight.name.text === "length"
+            ) {
+              const src = normalizeArrayTarget(condRight.expression, ts, checker);
+              if (src) {
+                if (!sourceArrayText) {
+                  sourceArrayText = src.text;
+                  sourceArraySymbol = src.symbol;
+                } else if (sourceArrayText !== src.text) {
+                  invalidAssignment = true;
+                  return;
+                }
+                hasValidLoopAssignment = true;
+                return;
+              }
+            }
+          }
+        }
+
+        // Any other assignment to indexName is untrusted
+        invalidAssignment = true;
+        return;
+      }
+    }
+
+    n.forEachChild(analyzeAssignments);
+  }
+
+  analyzeAssignments(container);
+
+  if (invalidAssignment || !hasValidLoopAssignment || !sourceArrayText) {
+    return undefined;
+  }
+
+  // Check relationship between targetArray and sourceArray:
+  // Either targetArray === sourceArray, OR targetArray is derived from sourceArray preserving length:
+  // e.g. const copy = prev.map(...) or [...prev] or prev.slice()
+  let arraysMatch = false;
+  if (sourceArraySymbol && targetArray.symbol && sourceArraySymbol === targetArray.symbol) {
+    arraysMatch = true;
+  } else if (sourceArrayText === targetArray.text) {
+    arraysMatch = true;
+  } else if (targetArray.symbol) {
+    const tDecls = targetArray.symbol.getDeclarations();
+    if (tDecls && tDecls.length > 0) {
+      const firstTDecl = tDecls[0];
+      if (firstTDecl && ts.isVariableDeclaration(firstTDecl)) {
+      const tInit = firstTDecl.initializer ? unwrapExpression(firstTDecl.initializer, ts) : undefined;
+      if (tInit) {
+        // Form 1: prev.map(...) or prev.slice()
+        if (ts.isCallExpression(tInit) && ts.isPropertyAccessExpression(tInit.expression)) {
+          const method = tInit.expression.name.text;
+          if (method === "map" || method === "slice") {
+            const baseArr = normalizeArrayTarget(tInit.expression.expression, ts, checker);
+            if (baseArr && (baseArr.text === sourceArrayText || (sourceArraySymbol && baseArr.symbol === sourceArraySymbol))) {
+              arraysMatch = true;
+            }
+          }
+        }
+        // Form 2: [...prev]
+        if (ts.isArrayLiteralExpression(tInit) && tInit.elements.length === 1) {
+          const elem = tInit.elements[0];
+          if (elem && ts.isSpreadElement(elem)) {
+            const baseArr = normalizeArrayTarget(elem.expression, ts, checker);
+            if (baseArr && (baseArr.text === sourceArrayText || (sourceArraySymbol && baseArr.symbol === sourceArraySymbol))) {
+              arraysMatch = true;
+            }
+          }
+        }
+        // Form 3: Array.from(prev)
+        if (ts.isCallExpression(tInit) && ts.isPropertyAccessExpression(tInit.expression)) {
+          if (tInit.expression.name.text === "from" && tInit.arguments.length >= 1) {
+            const firstArg = tInit.arguments[0];
+            if (firstArg) {
+              const baseArr = normalizeArrayTarget(firstArg, ts, checker);
+              if (baseArr && (baseArr.text === sourceArrayText || (sourceArraySymbol && baseArr.symbol === sourceArraySymbol))) {
+                arraysMatch = true;
+              }
+            }
+          }
+        }
+      }
+      }
+    }
+  }
+
+  if (!arraysMatch) return undefined;
+
+  // Check dominating exit guard:
+  // Find top statement in container enclosing node
+  let nodeScope: tsType.Node = node;
+  while (nodeScope.parent && nodeScope.parent !== container) {
+    nodeScope = nodeScope.parent;
+  }
+  const stmts = container.statements;
+  const targetIdx = stmts.indexOf(nodeScope as tsType.Statement);
+  if (targetIdx <= 0) return undefined;
+
+  let guardIdx = -1;
+  let guardEvidence = "";
+
+  for (let i = 0; i < targetIdx; i++) {
+    const prior = stmts[i];
+    if (!prior) continue;
+
+    if (ts.isIfStatement(prior) && statementExitsControlFlow(prior.thenStatement, ts)) {
+      const cond = prior.expression;
+      if (isExitNegativeCheckForIndex(cond, indexName, ts)) {
+        guardIdx = i;
+        guardEvidence = `Dominating guard '${cond.getText()}' establishes '${indexName}' is a valid search index for '${targetArray.text}'.`;
+        break;
+      }
+    }
+  }
+
+  if (guardIdx === -1) return undefined;
+
+  // Verify no mutations on sourceArray or targetArray between guard and node
+  for (let i = guardIdx + 1; i < targetIdx; i++) {
+    const s = stmts[i];
+    if (s) {
+      if (hasArrayMutation(s, targetArray.text, ts, checker, targetArray.symbol)) return undefined;
+      if (hasArrayMutation(s, sourceArrayText, ts, checker, sourceArraySymbol)) return undefined;
+    }
+  }
+
+  return {
+    isGuarded: true,
+    evidence: guardEvidence,
+  };
+}
+/**
  * Checks if a React state variable indexing a static const array is provably bounded by verified state transitions.
  */
 function isReactStateBoundedIndex(
@@ -1133,25 +1780,36 @@ export function isGuardedNonNullAssertion(
       return staticLiteralCheck;
     }
 
-    // 1b. Check loop or callback bounds: e.g. for (let i = 0; i < arr.length; i++) arr[i]!
+    // 1b. Check constructed array cardinality: e.g. amplitudes[numLayers]! or coeffs[0]!
+    const cardinalityCheck = isConstructedArrayCardinalityBoundedIndex(node, operand, ts, checker);
+    if (cardinalityCheck?.isGuarded) {
+      return cardinalityCheck;
+    }
+
+    // 1c. Check loop or callback bounds: e.g. for (let i = 0; i < arr.length; i++) arr[i]!
     const loopCheck = isLoopOrCallbackBoundedIndex(node, operand, ts, checker);
     if (loopCheck?.isGuarded) {
       return loopCheck;
     }
 
-    // 1c. Check React state bounds: e.g. STEPS[step]! with constrained setStep transitions
+    // 1d. Check React state bounds: e.g. STEPS[step]! with constrained setStep transitions
     const reactStateCheck = isReactStateBoundedIndex(operand, ts, checker);
     if (reactStateCheck?.isGuarded) {
       return reactStateCheck;
     }
 
-    // 1d. Check findIndex contract: e.g. const i = arr.findIndex(...); if (i !== -1) arr[i]!
+    // 1e. Check search provenance: e.g. copy[victimIdx]!
+    const provenanceCheck = isSearchProvenanceBoundedIndex(node, operand, ts, checker);
+    if (provenanceCheck?.isGuarded) {
+      return provenanceCheck;
+    }
+
+    // 1f. Check findIndex contract: e.g. const i = arr.findIndex(...); if (i !== -1) arr[i]!
     const findIndexCheck = isFindIndexBoundedIndex(node, operand, ts, checker);
     if (findIndexCheck?.isGuarded) {
       return findIndexCheck;
     }
-
-    // 1e. Dominating statement-level bounds exit check: if (index < 0 || index >= array.length) return;
+    // 1g. Dominating statement-level bounds exit check: if (index < 0 || index >= array.length) return;
     const arrayInfo = normalizeArrayTarget(operand.expression, ts, checker);
     const indexInfo = normalizeIndexExpression(operand.argumentExpression, ts, checker);
     if (arrayInfo && indexInfo) {
