@@ -1,5 +1,6 @@
 import type * as tsType from "typescript";
 import { unwrapExpression } from "./values.js";
+import { resolveReactHook } from "../engine/symbols.js";
 
 export interface GuardCheckResult {
   readonly isGuarded: boolean;
@@ -26,6 +27,276 @@ function statementExitsControlFlow(stmt: tsType.Statement, ts: typeof tsType): b
     return last !== undefined && statementExitsControlFlow(last, ts);
   }
 
+  return false;
+}
+
+function isAssignmentOperator(kind: tsType.SyntaxKind, ts: typeof tsType): boolean {
+  return (
+    kind === ts.SyntaxKind.EqualsToken ||
+    kind === ts.SyntaxKind.PlusEqualsToken ||
+    kind === ts.SyntaxKind.MinusEqualsToken ||
+    kind === ts.SyntaxKind.AsteriskEqualsToken ||
+    kind === ts.SyntaxKind.AsteriskAsteriskEqualsToken ||
+    kind === ts.SyntaxKind.SlashEqualsToken ||
+    kind === ts.SyntaxKind.PercentEqualsToken ||
+    kind === ts.SyntaxKind.LessThanLessThanEqualsToken ||
+    kind === ts.SyntaxKind.GreaterThanGreaterThanEqualsToken ||
+    kind === ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken ||
+    kind === ts.SyntaxKind.AmpersandEqualsToken ||
+    kind === ts.SyntaxKind.BarEqualsToken ||
+    kind === ts.SyntaxKind.CaretEqualsToken ||
+    kind === ts.SyntaxKind.BarBarEqualsToken ||
+    kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
+    kind === ts.SyntaxKind.QuestionQuestionEqualsToken
+  );
+}
+
+function hasVariableReassignment(
+  node: tsType.Node,
+  targetName: string,
+  targetSymbol: tsType.Symbol | undefined,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined,
+  beforePos?: number
+): boolean {
+  let reassigned = false;
+
+  function checkTargetMatch(ident: tsType.Identifier): boolean {
+    if (checker && targetSymbol) {
+      let sym = checker.getSymbolAtLocation(ident);
+      if (sym && (sym.flags & ts.SymbolFlags.Alias) !== 0) {
+        try {
+          sym = checker.getAliasedSymbol(sym);
+        } catch {
+          // ignore
+        }
+      }
+      if (sym && sym === targetSymbol) {
+        return true;
+      }
+    }
+    return ident.text === targetName;
+  }
+
+  function checkLeftAssignment(leftExpr: tsType.Expression): boolean {
+    const unwrapped = unwrapExpression(leftExpr, ts);
+    if (ts.isIdentifier(unwrapped)) {
+      return checkTargetMatch(unwrapped);
+    }
+    if (ts.isArrayLiteralExpression(unwrapped)) {
+      return unwrapped.elements.some((el) => {
+        if (ts.isOmittedExpression(el)) return false;
+        if (ts.isSpreadElement(el)) {
+          return checkLeftAssignment(el.expression);
+        }
+        return checkLeftAssignment(el);
+      });
+    }
+    if (ts.isObjectLiteralExpression(unwrapped)) {
+      return unwrapped.properties.some((prop) => {
+        if (ts.isShorthandPropertyAssignment(prop)) {
+          return checkTargetMatch(prop.name);
+        }
+        if (ts.isPropertyAssignment(prop) && ts.isExpression(prop.initializer)) {
+          return checkLeftAssignment(prop.initializer);
+        }
+        if (ts.isSpreadAssignment(prop)) {
+          return checkLeftAssignment(prop.expression);
+        }
+        return false;
+      });
+    }
+    return false;
+  }
+
+  function walk(n: tsType.Node) {
+    if (reassigned) return;
+    if (beforePos !== undefined && n.pos >= beforePos) return;
+
+    if (ts.isBinaryExpression(n) && isAssignmentOperator(n.operatorToken.kind, ts)) {
+      if (checkLeftAssignment(n.left)) {
+        reassigned = true;
+        return;
+      }
+    }
+
+    if (
+      (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+      (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)
+    ) {
+      const operand = unwrapExpression(n.operand, ts);
+      if (ts.isIdentifier(operand) && checkTargetMatch(operand)) {
+        reassigned = true;
+        return;
+      }
+    }
+
+    n.forEachChild(walk);
+  }
+
+  walk(node);
+  return reassigned;
+}
+
+function isStateUpperBoundGuard(
+  cond: tsType.Expression,
+  stateName: string,
+  maxExclusive: number,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): boolean {
+  const unwrapped = unwrapExpression(cond, ts);
+  if (ts.isBinaryExpression(unwrapped)) {
+    const op = unwrapped.operatorToken.kind;
+    const left = unwrapExpression(unwrapped.left, ts);
+    const right = unwrapExpression(unwrapped.right, ts);
+
+    if (ts.isIdentifier(left) && left.text === stateName) {
+      if (ts.isNumericLiteral(right)) {
+        const limit = Number(right.text);
+        if (op === ts.SyntaxKind.LessThanToken && limit <= maxExclusive) return true;
+        if (op === ts.SyntaxKind.LessThanEqualsToken && limit <= maxExclusive - 1) return true;
+      }
+      if (ts.isBinaryExpression(right) && right.operatorToken.kind === ts.SyntaxKind.MinusToken) {
+        const rLeft = unwrapExpression(right.left, ts);
+        const rRight = unwrapExpression(right.right, ts);
+        if (ts.isPropertyAccessExpression(rLeft) && rLeft.name.text === "length" && ts.isNumericLiteral(rRight)) {
+          const minusNum = Number(rRight.text);
+          if (op === ts.SyntaxKind.LessThanToken && minusNum >= 1) return true;
+          if (op === ts.SyntaxKind.LessThanEqualsToken && minusNum >= 2) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function isStateLowerBoundGuard(
+  cond: tsType.Expression,
+  stateName: string,
+  minInclusive: number,
+  ts: typeof tsType,
+  checker?: tsType.TypeChecker | undefined
+): boolean {
+  const unwrapped = unwrapExpression(cond, ts);
+  if (ts.isBinaryExpression(unwrapped)) {
+    const op = unwrapped.operatorToken.kind;
+    const left = unwrapExpression(unwrapped.left, ts);
+    const right = unwrapExpression(unwrapped.right, ts);
+
+    if (ts.isIdentifier(left) && left.text === stateName) {
+      if (ts.isNumericLiteral(right)) {
+        const limit = Number(right.text);
+        if (op === ts.SyntaxKind.GreaterThanToken && limit >= minInclusive - 1) return true;
+        if (op === ts.SyntaxKind.GreaterThanEqualsToken && limit >= minInclusive) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isParamBoundedCondition(
+  cond: tsType.Expression,
+  paramName: string,
+  arrayLength: number,
+  ts: typeof tsType,
+  isExitGuard: boolean
+): boolean {
+  const unwrapped = unwrapExpression(cond, ts);
+
+  if (isExitGuard) {
+    // Exit guard disjunction: param < 0 || param >= arrayLength (or param > arrayLength - 1)
+    if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+      let hasLowerExit = false;
+      let hasUpperExit = false;
+      const disjuncts: tsType.Expression[] = [];
+      function collectOrs(e: tsType.Expression) {
+        const u = unwrapExpression(e, ts);
+        if (ts.isBinaryExpression(u) && u.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+          collectOrs(u.left);
+          collectOrs(u.right);
+        } else {
+          disjuncts.push(u);
+        }
+      }
+      collectOrs(unwrapped);
+
+      for (const d of disjuncts) {
+        if (ts.isBinaryExpression(d)) {
+          const op = d.operatorToken.kind;
+          const left = unwrapExpression(d.left, ts);
+          const right = unwrapExpression(d.right, ts);
+          if (ts.isIdentifier(left) && left.text === paramName) {
+            if (ts.isNumericLiteral(right)) {
+              const n = Number(right.text);
+              if ((op === ts.SyntaxKind.LessThanToken && n === 0) || (op === ts.SyntaxKind.LessThanEqualsToken && n === -1)) {
+                hasLowerExit = true;
+              }
+              if ((op === ts.SyntaxKind.GreaterThanEqualsToken && n >= arrayLength) || (op === ts.SyntaxKind.GreaterThanToken && n >= arrayLength - 1)) {
+                hasUpperExit = true;
+              }
+            }
+            if (ts.isPropertyAccessExpression(right) && right.name.text === "length") {
+              if (op === ts.SyntaxKind.GreaterThanEqualsToken || op === ts.SyntaxKind.GreaterThanToken) {
+                hasUpperExit = true;
+              }
+            }
+            if (ts.isBinaryExpression(right) && right.operatorToken.kind === ts.SyntaxKind.MinusToken) {
+              const rLeft = unwrapExpression(right.left, ts);
+              if (ts.isPropertyAccessExpression(rLeft) && rLeft.name.text === "length") {
+                if (op === ts.SyntaxKind.GreaterThanToken) {
+                  hasUpperExit = true;
+                }
+              }
+            }
+          }
+        }
+      }
+      return hasLowerExit && hasUpperExit;
+    }
+  } else {
+    // Entry guard conjunction: param >= 0 && param < arrayLength
+    if (ts.isBinaryExpression(unwrapped) && unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+      let hasLowerEntry = false;
+      let hasUpperEntry = false;
+      const conjuncts: tsType.Expression[] = [];
+      function collectAnds(e: tsType.Expression) {
+        const u = unwrapExpression(e, ts);
+        if (ts.isBinaryExpression(u) && u.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+          collectAnds(u.left);
+          collectAnds(u.right);
+        } else {
+          conjuncts.push(u);
+        }
+      }
+      collectAnds(unwrapped);
+
+      for (const c of conjuncts) {
+        if (ts.isBinaryExpression(c)) {
+          const op = c.operatorToken.kind;
+          const left = unwrapExpression(c.left, ts);
+          const right = unwrapExpression(c.right, ts);
+          if (ts.isIdentifier(left) && left.text === paramName) {
+            if (ts.isNumericLiteral(right)) {
+              const n = Number(right.text);
+              if ((op === ts.SyntaxKind.GreaterThanEqualsToken && n === 0) || (op === ts.SyntaxKind.GreaterThanToken && n === -1)) {
+                hasLowerEntry = true;
+              }
+              if ((op === ts.SyntaxKind.LessThanToken && n <= arrayLength) || (op === ts.SyntaxKind.LessThanEqualsToken && n <= arrayLength - 1)) {
+                hasUpperEntry = true;
+              }
+            }
+            if (ts.isPropertyAccessExpression(right) && right.name.text === "length") {
+              if (op === ts.SyntaxKind.LessThanToken || op === ts.SyntaxKind.LessThanEqualsToken) {
+                hasUpperEntry = true;
+              }
+            }
+          }
+        }
+      }
+      return hasLowerEntry && hasUpperEntry;
+    }
+  }
   return false;
 }
 
@@ -2017,7 +2288,7 @@ function isSearchProvenanceBoundedIndex(
         // Form 1: prev.map(...) or prev.slice()
         if (ts.isCallExpression(tInit) && ts.isPropertyAccessExpression(tInit.expression)) {
           const method = tInit.expression.name.text;
-          if (method === "map" || method === "slice") {
+          if (method === "map" || (method === "slice" && tInit.arguments.length === 0)) {
             const baseArr = normalizeArrayTarget(tInit.expression.expression, ts, checker);
             if (baseArr && (baseArr.text === sourceArrayText || (sourceArraySymbol && baseArr.symbol === sourceArraySymbol))) {
               arraysMatch = true;
@@ -2146,15 +2417,11 @@ function isReactStateBoundedIndex(
     return undefined;
   }
 
+  const chk: tsType.TypeChecker = checker;
   const initCall = varDecl.initializer;
-  const hookCallee = unwrapExpression(initCall.expression, ts);
-  let isUseState = false;
-  if (ts.isIdentifier(hookCallee) && hookCallee.text === "useState") {
-    isUseState = true;
-  } else if (ts.isPropertyAccessExpression(hookCallee) && hookCallee.name.text === "useState") {
-    isUseState = true;
+  if (!resolveReactHook(initCall, chk, "useState")) {
+    return undefined;
   }
-  if (!isUseState) return undefined;
 
   const initArg = initCall.arguments[0];
   if (!initArg || !ts.isNumericLiteral(initArg)) return undefined;
@@ -2208,17 +2475,119 @@ function isReactStateBoundedIndex(
           return;
         }
 
-        // Sub-case 2: Functional updater: setter(s => s + 1) or setter(prev => Math.min(prev + 1, L - 1))
+        // Sub-case 2: Functional updater: setter(s => s + 1) or setter(prev => ...)
         if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) {
-          // Verify functional updater returns values strictly in [0, L - 1]
-          // Simple safe pattern: s => s + 1 (guarded) or s => Math.min(s + 1, L - 1)
+          const updaterParam = arg.parameters[0];
+          const paramText = updaterParam && ts.isIdentifier(updaterParam.name) ? updaterParam.name.text : undefined;
+          let retExpr: tsType.Expression | undefined;
+
+          if (ts.isBlock(arg.body)) {
+            for (const st of arg.body.statements) {
+              if (ts.isReturnStatement(st) && st.expression) {
+                retExpr = unwrapExpression(st.expression, ts);
+                break;
+              }
+            }
+          } else if (ts.isExpression(arg.body)) {
+            retExpr = unwrapExpression(arg.body as tsType.Expression, ts);
+          }
+
+          if (!retExpr) {
+            hasInvalidSetterWrite = true;
+            return;
+          }
+
+          // Bounded literal integer: s => 0
+          if (ts.isNumericLiteral(retExpr)) {
+            const num = Number(retExpr.text);
+            if (Number.isInteger(num) && num >= 0 && num < arrayLength) {
+              return;
+            }
+            hasInvalidSetterWrite = true;
+            return;
+          }
+
+          // Increment: s => s + 1 (requires enclosing upper bound guard)
+          if (
+            ts.isBinaryExpression(retExpr) &&
+            retExpr.operatorToken.kind === ts.SyntaxKind.PlusToken
+          ) {
+            const l = unwrapExpression(retExpr.left, ts);
+            const r = unwrapExpression(retExpr.right, ts);
+            if (
+              ((paramText && ts.isIdentifier(l) && l.text === paramText) || (ts.isIdentifier(l) && l.text === stateName)) &&
+              ts.isNumericLiteral(r)
+            ) {
+              const inc = Number(r.text);
+              if (inc >= 1) {
+                let isGuardedInc = false;
+                let curCheck: tsType.Node = parent;
+                while (curCheck.parent && curCheck.parent !== funcNode) {
+                  if (ts.isIfStatement(curCheck.parent)) {
+                    const ifStmt = curCheck.parent;
+                    if (
+                      ifStmt.thenStatement === curCheck ||
+                      (ts.isBlock(ifStmt.thenStatement) && isNodeDescendantOf(curCheck, ifStmt.thenStatement))
+                    ) {
+                      if (isStateUpperBoundGuard(ifStmt.expression, stateName, arrayLength - inc, ts, checker)) {
+                        isGuardedInc = true;
+                        break;
+                      }
+                    }
+                  }
+                  curCheck = curCheck.parent;
+                }
+                if (isGuardedInc) return;
+              }
+            }
+            hasInvalidSetterWrite = true;
+            return;
+          }
+
+          // Decrement: s => s - 1 (requires enclosing lower bound guard)
+          if (
+            ts.isBinaryExpression(retExpr) &&
+            retExpr.operatorToken.kind === ts.SyntaxKind.MinusToken
+          ) {
+            const l = unwrapExpression(retExpr.left, ts);
+            const r = unwrapExpression(retExpr.right, ts);
+            if (
+              ((paramText && ts.isIdentifier(l) && l.text === paramText) || (ts.isIdentifier(l) && l.text === stateName)) &&
+              ts.isNumericLiteral(r)
+            ) {
+              const dec = Number(r.text);
+              if (dec >= 1) {
+                let isGuardedDec = false;
+                let curCheck: tsType.Node = parent;
+                while (curCheck.parent && curCheck.parent !== funcNode) {
+                  if (ts.isIfStatement(curCheck.parent)) {
+                    const ifStmt = curCheck.parent;
+                    if (
+                      ifStmt.thenStatement === curCheck ||
+                      (ts.isBlock(ifStmt.thenStatement) && isNodeDescendantOf(curCheck, ifStmt.thenStatement))
+                    ) {
+                      if (isStateLowerBoundGuard(ifStmt.expression, stateName, dec, ts, checker)) {
+                        isGuardedDec = true;
+                        break;
+                      }
+                    }
+                  }
+                  curCheck = curCheck.parent;
+                }
+                if (isGuardedDec) return;
+              }
+            }
+            hasInvalidSetterWrite = true;
+            return;
+          }
+
+          hasInvalidSetterWrite = true;
           return;
         }
 
         // Sub-case 3: Identifier target (e.g. setStep(target)): check if target was bounds-checked in enclosing function
         if (ts.isIdentifier(arg)) {
           const paramName = arg.text;
-          // Look in enclosing block for early guard on paramName: if (target < 0 || target > STEPS.length - 1) return;
           let enclosingBlock: tsType.Node = parent;
           while (
             enclosingBlock.parent &&
@@ -2233,17 +2602,32 @@ function isReactStateBoundedIndex(
             for (const stmt of enclosingBlock.statements) {
               if (stmt.end <= parent.pos && ts.isIfStatement(stmt)) {
                 if (statementExitsControlFlow(stmt.thenStatement, ts)) {
-                  const condText = stmt.expression.getText();
-                  if (
-                    condText.includes(paramName) &&
-                    (condText.includes("0") || condText.includes("< 0") || condText.includes("<= 0")) &&
-                    (condText.includes("length") || condText.includes(String(arrayLength)))
-                  ) {
+                  if (isParamBoundedCondition(stmt.expression, paramName, arrayLength, ts, true)) {
                     paramGuarded = true;
                     break;
                   }
                 }
               }
+            }
+          }
+
+          if (!paramGuarded) {
+            // Check entry guard enclosing parent
+            let curN: tsType.Node = parent;
+            while (curN.parent && curN.parent !== funcNode) {
+              if (ts.isIfStatement(curN.parent)) {
+                const ifStmt = curN.parent;
+                if (
+                  ifStmt.thenStatement === curN ||
+                  (ts.isBlock(ifStmt.thenStatement) && isNodeDescendantOf(curN, ifStmt.thenStatement))
+                ) {
+                  if (isParamBoundedCondition(ifStmt.expression, paramName, arrayLength, ts, false)) {
+                    paramGuarded = true;
+                    break;
+                  }
+                }
+              }
+              curN = curN.parent;
             }
           }
 
@@ -2256,6 +2640,51 @@ function isReactStateBoundedIndex(
 
         // Sub-case 4: Binary expression: step + 1 or step - 1 (check enclosing if guard)
         if (ts.isBinaryExpression(arg)) {
+          const left = unwrapExpression(arg.left, ts);
+          const right = unwrapExpression(arg.right, ts);
+          if (ts.isIdentifier(left) && left.text === stateName && ts.isNumericLiteral(right)) {
+            const offsetNum = Number(right.text);
+            if (arg.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+              let isGuarded = false;
+              let curN: tsType.Node = parent;
+              while (curN.parent && curN.parent !== funcNode) {
+                if (ts.isIfStatement(curN.parent)) {
+                  const ifStmt = curN.parent;
+                  if (
+                    ifStmt.thenStatement === curN ||
+                    (ts.isBlock(ifStmt.thenStatement) && isNodeDescendantOf(curN, ifStmt.thenStatement))
+                  ) {
+                    if (isStateUpperBoundGuard(ifStmt.expression, stateName, arrayLength - offsetNum, ts, checker)) {
+                      isGuarded = true;
+                      break;
+                    }
+                  }
+                }
+                curN = curN.parent;
+              }
+              if (isGuarded) return;
+            } else if (arg.operatorToken.kind === ts.SyntaxKind.MinusToken) {
+              let isGuarded = false;
+              let curN: tsType.Node = parent;
+              while (curN.parent && curN.parent !== funcNode) {
+                if (ts.isIfStatement(curN.parent)) {
+                  const ifStmt = curN.parent;
+                  if (
+                    ifStmt.thenStatement === curN ||
+                    (ts.isBlock(ifStmt.thenStatement) && isNodeDescendantOf(curN, ifStmt.thenStatement))
+                  ) {
+                    if (isStateLowerBoundGuard(ifStmt.expression, stateName, offsetNum, ts, checker)) {
+                      isGuarded = true;
+                      break;
+                    }
+                  }
+                }
+                curN = curN.parent;
+              }
+              if (isGuarded) return;
+            }
+          }
+          hasInvalidSetterWrite = true;
           return;
         }
 
@@ -2279,10 +2708,11 @@ function isReactStateBoundedIndex(
 
       // Passed as an argument to another function call (not setter itself)
       if (ts.isCallExpression(parent) && parent.expression !== n) {
-        const callee = unwrapExpression(parent.expression, ts);
         if (
-          ts.isIdentifier(callee) &&
-          (callee.text === "useCallback" || callee.text === "useMemo" || callee.text === "useEffect")
+          resolveReactHook(parent, chk, "useCallback") ||
+          resolveReactHook(parent, chk, "useMemo") ||
+          resolveReactHook(parent, chk, "useEffect") ||
+          resolveReactHook(parent, chk, "useLayoutEffect")
         ) {
           // Setter in hook dependency array is fine
           return;
@@ -2296,12 +2726,12 @@ function isReactStateBoundedIndex(
         if (
           parent.parent &&
           ts.isCallExpression(parent.parent) &&
-          ts.isIdentifier(unwrapExpression(parent.parent.expression, ts))
+          (resolveReactHook(parent.parent, chk, "useCallback") ||
+            resolveReactHook(parent.parent, chk, "useMemo") ||
+            resolveReactHook(parent.parent, chk, "useEffect") ||
+            resolveReactHook(parent.parent, chk, "useLayoutEffect"))
         ) {
-          const hookName = unwrapExpression(parent.parent.expression, ts).getText();
-          if (hookName === "useCallback" || hookName === "useMemo" || hookName === "useEffect") {
-            return;
-          }
+          return;
         }
         setterEscapes = true;
         return;
@@ -2440,6 +2870,15 @@ export function isGuardedNonNullAssertion(
   // Case 2: Direct variable / identifier non-null assertion: `target!`
   if (ts.isIdentifier(operand)) {
     const targetName = operand.text;
+    const targetSymbol = checker?.getSymbolAtLocation(operand);
+    let resolvedTargetSymbol = targetSymbol;
+    if (resolvedTargetSymbol && (resolvedTargetSymbol.flags & ts.SymbolFlags.Alias) !== 0) {
+      try {
+        resolvedTargetSymbol = checker?.getAliasedSymbol(resolvedTargetSymbol);
+      } catch {
+        // ignore
+      }
+    }
 
     let stmt: tsType.Node = node;
     while (stmt.parent && !ts.isBlock(stmt.parent) && !ts.isSourceFile(stmt.parent)) {
@@ -2457,37 +2896,104 @@ export function isGuardedNonNullAssertion(
 
           if (ts.isIfStatement(prior) && statementExitsControlFlow(prior.thenStatement, ts)) {
             const cond = unwrapExpression(prior.expression, ts);
+            let isGuardMatched = false;
+            let evidenceStr = "";
 
-            // if (!target) return;
+            // 1. if (!target) return;
             if (ts.isPrefixUnaryExpression(cond) && cond.operator === ts.SyntaxKind.ExclamationToken) {
               const inner = unwrapExpression(cond.operand, ts);
-              if (ts.isIdentifier(inner) && inner.text === targetName) {
-                return {
-                  isGuarded: true,
-                  evidence: `Dominating guard '!${targetName}' proves operand is non-null.`,
-                };
+              if (ts.isIdentifier(inner)) {
+                const innerSym = checker?.getSymbolAtLocation(inner);
+                let resolvedInnerSym = innerSym;
+                if (resolvedInnerSym && (resolvedInnerSym.flags & ts.SymbolFlags.Alias) !== 0) {
+                  try {
+                    resolvedInnerSym = checker?.getAliasedSymbol(resolvedInnerSym);
+                  } catch {
+                    // ignore
+                  }
+                }
+                const matchesSymbol =
+                  resolvedTargetSymbol && resolvedInnerSym
+                    ? resolvedInnerSym === resolvedTargetSymbol
+                    : inner.text === targetName;
+
+                if (matchesSymbol) {
+                  isGuardMatched = true;
+                  evidenceStr = `Dominating guard '!${targetName}' proves operand is non-null.`;
+                }
               }
             }
 
-            // if (target === null || target === undefined || target == null) return;
-            if (ts.isBinaryExpression(cond)) {
+            // 2. if (target === null || target === undefined || target == null) return;
+            if (!isGuardMatched && ts.isBinaryExpression(cond)) {
               const left = unwrapExpression(cond.left, ts);
               const right = unwrapExpression(cond.right, ts);
+              const op = cond.operatorToken.kind;
               if (
-                (ts.isIdentifier(left) && left.text === targetName) ||
-                (ts.isIdentifier(right) && right.text === targetName)
+                op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                op === ts.SyntaxKind.EqualsEqualsToken
               ) {
-                const other = ts.isIdentifier(left) && left.text === targetName ? right : left;
-                if (
-                  other.kind === ts.SyntaxKind.NullKeyword ||
-                  other.kind === ts.SyntaxKind.UndefinedKeyword ||
-                  (ts.isIdentifier(other) && other.text === "undefined")
-                ) {
-                  return {
-                    isGuarded: true,
-                    evidence: `Dominating null check proves '${targetName}' is non-null.`,
-                  };
+                let targetSide: tsType.Identifier | undefined;
+                let nullSide: tsType.Expression | undefined;
+                if (ts.isIdentifier(left)) {
+                  targetSide = left;
+                  nullSide = right;
+                } else if (ts.isIdentifier(right)) {
+                  targetSide = right;
+                  nullSide = left;
                 }
+
+                if (targetSide && nullSide) {
+                  const innerSym = checker?.getSymbolAtLocation(targetSide);
+                  let resolvedInnerSym = innerSym;
+                  if (resolvedInnerSym && (resolvedInnerSym.flags & ts.SymbolFlags.Alias) !== 0) {
+                    try {
+                      resolvedInnerSym = checker?.getAliasedSymbol(resolvedInnerSym);
+                    } catch {
+                      // ignore
+                    }
+                  }
+                  const matchesSymbol =
+                    resolvedTargetSymbol && resolvedInnerSym
+                      ? resolvedInnerSym === resolvedTargetSymbol
+                      : targetSide.text === targetName;
+
+                  if (
+                    matchesSymbol &&
+                    (nullSide.kind === ts.SyntaxKind.NullKeyword ||
+                      nullSide.kind === ts.SyntaxKind.UndefinedKeyword ||
+                      (ts.isIdentifier(nullSide) && nullSide.text === "undefined"))
+                  ) {
+                    isGuardMatched = true;
+                    evidenceStr = `Dominating null check proves '${targetName}' is non-null.`;
+                  }
+                }
+              }
+            }
+
+            if (isGuardMatched) {
+              // Invalidation check: verify target was NOT reassigned between guard and assertion!
+              let isReassigned = false;
+              for (let j = i + 1; j < targetIndex; j++) {
+                const s = statements[j];
+                if (s && hasVariableReassignment(s, targetName, resolvedTargetSymbol, ts, checker)) {
+                  isReassigned = true;
+                  break;
+                }
+              }
+
+              if (!isReassigned) {
+                const currentStmt = statements[targetIndex];
+                if (currentStmt && hasVariableReassignment(currentStmt, targetName, resolvedTargetSymbol, ts, checker, node.pos)) {
+                  isReassigned = true;
+                }
+              }
+
+              if (!isReassigned) {
+                return {
+                  isGuarded: true,
+                  evidence: evidenceStr,
+                };
               }
             }
           }

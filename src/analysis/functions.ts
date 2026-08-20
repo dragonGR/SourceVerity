@@ -186,6 +186,33 @@ function isProvenNonThrowingExpression(
     return true;
   }
 
+  if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
+    return true;
+  }
+
+  if (ts.isArrayLiteralExpression(unwrapped)) {
+    return unwrapped.elements.every((el) => {
+      if (ts.isOmittedExpression(el)) return true;
+      if (ts.isSpreadElement(el)) return isProvenNonThrowingExpression(el.expression, ts, checker);
+      return isProvenNonThrowingExpression(el, ts, checker);
+    });
+  }
+
+  if (ts.isObjectLiteralExpression(unwrapped)) {
+    return unwrapped.properties.every((prop) => {
+      if (ts.isPropertyAssignment(prop) && ts.isExpression(prop.initializer)) {
+        return isProvenNonThrowingExpression(prop.initializer, ts, checker);
+      }
+      if (ts.isShorthandPropertyAssignment(prop)) {
+        return isProvenNonThrowingExpression(prop.name, ts, checker);
+      }
+      if (ts.isSpreadAssignment(prop)) {
+        return isProvenNonThrowingExpression(prop.expression, ts, checker);
+      }
+      return false;
+    });
+  }
+
   if (ts.isBinaryExpression(unwrapped)) {
     return (
       isProvenNonThrowingExpression(unwrapped.left, ts, checker) &&
@@ -201,24 +228,35 @@ function isProvenNonThrowingExpression(
     if (checker) {
       try {
         const objType = checker.getTypeAtLocation(unwrapped.expression);
-        if ((objType.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0) {
+        const nullishOrUnknown =
+          ts.TypeFlags.Null |
+          ts.TypeFlags.Undefined |
+          ts.TypeFlags.Void |
+          ts.TypeFlags.Any |
+          ts.TypeFlags.Unknown;
+
+        if ((objType.flags & nullishOrUnknown) !== 0) {
           return false;
         }
         if (objType.isUnion()) {
           const hasNullish = objType.types.some(
-            (t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0
+            (t) => (t.flags & nullishOrUnknown) !== 0
           );
           if (hasNullish) return false;
         }
       } catch {
         return false;
       }
+      return isProvenNonThrowingExpression(unwrapped.expression, ts, checker);
     }
-    return isProvenNonThrowingExpression(unwrapped.expression, ts, checker);
+    return false;
   }
 
   if (ts.isCallExpression(unwrapped)) {
-    return isKnownSafeSynchronousCall(unwrapped, ts);
+    if (!isKnownSafeSynchronousCall(unwrapped, ts)) {
+      return false;
+    }
+    return unwrapped.arguments.every((arg) => isProvenNonThrowingExpression(arg, ts, checker));
   }
 
   return false;
@@ -348,6 +386,10 @@ function isSafeSynchronousPreamble(
 ): boolean {
   if (containsAwaitOrThrow(stmt, ts)) {
     return false;
+  }
+
+  if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) {
+    return true;
   }
 
   if (ts.isVariableStatement(stmt)) {
@@ -484,7 +526,7 @@ function analyzeAsyncFunctionBody(
         hasUncaught = true;
       }
     } else {
-      if (containsAwaitOrThrow(stmt, ts, context)) {
+      if (containsAwaitOrThrow(stmt, ts, context) || !isSafeSynchronousPreamble(stmt, ts, checker)) {
         hasUncaught = true;
       }
     }

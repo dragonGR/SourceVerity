@@ -377,4 +377,123 @@ function run(c: Config) {
     assert.equal(findings.length, 1);
     assert.equal(findings[0]?.ruleId, "async/floating-promise");
   });
+
+  test("flags non-null assertion when variable is reassigned to nullable after dominating guard", () => {
+    const code = `
+interface User {
+  name: string;
+}
+declare function getOtherUser(): User | null;
+function test(user: User | null) {
+  if (!user) return;
+  user = getOtherUser();
+  console.log(user!.name);
+}
+    `.trim();
+    const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/non-null-assertion-risk");
+  });
+
+  test("flags promise assignment when alias is overwritten with null before return", () => {
+    const code = `
+declare function loadData(): Promise<string>;
+function testFlow() {
+  let p: Promise<string> | null = loadData();
+  let q: Promise<string> | null = p;
+  q = null;
+  return q;
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+  });
+
+  test("flags copy[idx]! when copy is truncated by slice(0, 1) but index comes from full array", () => {
+    const code = `
+const prev: ({ name: string } | undefined)[] = [{ name: "a" }, { name: "b" }, { name: "c" }];
+function testSlice() {
+  let victimIdx = -1;
+  for (let i = 0; i < prev.length; i++) {
+    if (prev[i]?.name === "c") {
+      victimIdx = i;
+      break;
+    }
+  }
+  if (victimIdx < 0) return null;
+  const copy = prev.slice(0, 1);
+  return copy[victimIdx]!;
+}
+    `.trim();
+    const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/non-null-assertion-risk");
+  });
+
+  test("flags React state indexing when functional updater returns out-of-bounds literal", () => {
+    const code = `
+import { useState } from 'react';
+const STEPS: ({ title: string } | undefined)[] = [
+  { title: 'Step 1' },
+  { title: 'Step 2' },
+];
+function Component() {
+  const [step, setStep] = useState(0);
+  const current = STEPS[step]!;
+  const jump = () => setStep(s => 99999);
+  return null;
+}
+    `.trim();
+    const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/non-null-assertion-risk");
+  });
+
+  test("flags React state indexing when useState is a custom local function", () => {
+    const code = `
+function useState(init: number): [number, (val: number) => void] {
+  return [init, (v) => {}];
+}
+const STEPS: ({ title: string } | undefined)[] = [
+  { title: 'Step 1' },
+  { title: 'Step 2' },
+];
+function Component() {
+  const [step, setStep] = useState(0);
+  const current = STEPS[step]!;
+  const handleNext = () => {
+    if (step < STEPS.length - 1) {
+      setStep(step + 1);
+    }
+  };
+  return null;
+}
+    `.trim();
+    const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "typescript/non-null-assertion-risk");
+  });
+
+  test("flags caller when async function preamble throws synchronously on nullable property access", () => {
+    const code = `
+declare function work(): Promise<void>;
+async function execute(input: { val?: string }) {
+  const v = input.val.trim();
+  try {
+    await work();
+  } catch (err) {
+    console.error(err);
+  }
+}
+function run(x: { val?: string }) {
+  execute(x);
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.ruleId, "async/floating-promise");
+    assert.equal(findings[0]?.severity, "error");
+    assert.equal(findings[0]?.confidence, "high");
+  });
 });

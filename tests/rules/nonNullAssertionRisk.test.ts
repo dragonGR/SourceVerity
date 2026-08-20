@@ -198,7 +198,7 @@ function processName(name: string) {
 
     test("does not flag React state indexing static const array with verified bounds", () => {
       const code = `
-  declare function useState<T>(init: T): [T, (val: T | ((prev: T) => T)) => void];
+  import { useState } from 'react';
 
   const STEPS: ({ title: string } | undefined)[] = [
     { title: 'Step 1' },
@@ -232,7 +232,7 @@ function processName(name: string) {
 
     test("near-miss: flags React state indexing when setter escapes as JSX prop", () => {
       const code = `
-  declare function useState<T>(init: T): [T, (val: T) => void];
+  import { useState } from 'react';
 
   const STEPS: ({ title: string } | undefined)[] = [
     { title: 'Step 1' },
@@ -257,7 +257,7 @@ function processName(name: string) {
 
     test("near-miss: flags React state indexing when setter receives out-of-bounds literal", () => {
       const code = `
-  declare function useState<T>(init: T): [T, (val: T) => void];
+  import { useState } from 'react';
 
   const STEPS: ({ title: string } | undefined)[] = [
     { title: 'Step 1' },
@@ -280,7 +280,7 @@ function processName(name: string) {
 
     test("near-miss: flags React state indexing when initial state is out of bounds", () => {
       const code = `
-  declare function useState<T>(init: T): [T, (val: T) => void];
+  import { useState } from 'react';
 
   const STEPS: ({ title: string } | undefined)[] = [
     { title: 'Step 1' },
@@ -1234,6 +1234,238 @@ function processName(name: string) {
       }
       return null;
     });
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("does not flag non-null assertion when dominating guard is not reassigned", () => {
+      const code = `
+  function f(value: { name: string } | null) {
+    if (!value) return;
+    const n = value!.name;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("flags non-null assertion when variable is reassigned after dominating guard", () => {
+      const code = `
+  declare function getNullable(): { name: string } | null;
+  function f(value: { name: string } | null) {
+    if (!value) return;
+    value = getNullable();
+    const n = value!.name;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("flags non-null assertion when variable is nullish-assigned after dominating guard", () => {
+      const code = `
+  declare function getNullable(): { name: string } | null;
+  function f(value: { name: string } | null) {
+    if (!value) return;
+    value ??= getNullable();
+    const n = value!.name;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("does not flag non-null assertion when shadow declaration in nested scope uses same name", () => {
+      const code = `
+  declare function getNullable(): { name: string } | null;
+  function f(value: { name: string } | null) {
+    if (!value) return;
+    {
+      const value = getNullable();
+    }
+    const n = value!.name;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("does not flag copy[idx]! when copy is created via zero-argument slice()", () => {
+      const code = `
+  const prev: ({ name: string } | undefined)[] = [{ name: "a" }, { name: "b" }];
+  function testSlice() {
+    let victimIdx = -1;
+    for (let i = 0; i < prev.length; i++) {
+      if (prev[i]?.name === "b") {
+        victimIdx = i;
+        break;
+      }
+    }
+    if (victimIdx < 0) return null;
+    const copy = prev.slice();
+    return copy[victimIdx]!;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 0);
+    });
+
+    test("flags copy[idx]! when copy is created via slice(0, 1) with trimming arguments", () => {
+      const code = `
+  const prev: ({ name: string } | undefined)[] = [{ name: "a" }, { name: "b" }, { name: "c" }];
+  function testSlice() {
+    let victimIdx = -1;
+    for (let i = 0; i < prev.length; i++) {
+      if (prev[i]?.name === "c") {
+        victimIdx = i;
+        break;
+      }
+    }
+    if (victimIdx < 0) return null;
+    const copy = prev.slice(0, 1);
+    return copy[victimIdx]!;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("flags copy[idx]! when copy is created via slice(1)", () => {
+      const code = `
+  const prev: ({ name: string } | undefined)[] = [{ name: "a" }, { name: "b" }, { name: "c" }];
+  function testSlice() {
+    let victimIdx = -1;
+    for (let i = 0; i < prev.length; i++) {
+      if (prev[i]?.name === "a") {
+        victimIdx = i;
+        break;
+      }
+    }
+    if (victimIdx < 0) return null;
+    const copy = prev.slice(1);
+    return copy[victimIdx]!;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("flags copy[idx]! when copy is created via slice(0, dynamicEnd)", () => {
+      const code = `
+  const prev: ({ name: string } | undefined)[] = [{ name: "a" }, { name: "b" }];
+  function testSlice(dynamicEnd: number) {
+    let victimIdx = -1;
+    for (let i = 0; i < prev.length; i++) {
+      if (prev[i]?.name === "b") {
+        victimIdx = i;
+        break;
+      }
+    }
+    if (victimIdx < 0) return null;
+    const copy = prev.slice(0, dynamicEnd);
+    return copy[victimIdx]!;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("flags React state indexing when functional updater returns large out-of-bounds literal", () => {
+      const code = `
+  import { useState } from 'react';
+  const STEPS: ({ title: string } | undefined)[] = [
+    { title: 'Step 1' },
+    { title: 'Step 2' },
+  ];
+  function Component() {
+    const [step, setStep] = useState(0);
+    const current = STEPS[step]!;
+    const jump = () => setStep(() => 99999);
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("flags React state indexing when functional updater adds unconstrained step", () => {
+      const code = `
+  import { useState } from 'react';
+  const STEPS: ({ title: string } | undefined)[] = [
+    { title: 'Step 1' },
+    { title: 'Step 2' },
+  ];
+  function Component() {
+    const [step, setStep] = useState(0);
+    const current = STEPS[step]!;
+    const jump = () => setStep(s => 99999);
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("flags React state indexing when setter uses external binary expression", () => {
+      const code = `
+  import { useState } from 'react';
+  const STEPS: ({ title: string } | undefined)[] = [
+    { title: 'Step 1' },
+    { title: 'Step 2' },
+  ];
+  function Component(props: { offset: number }) {
+    const [step, setStep] = useState(0);
+    const current = STEPS[step]!;
+    const jump = () => setStep(step + props.offset);
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("flags React state indexing when custom local function is named useState", () => {
+      const code = `
+  function useState(init: number): [number, (val: number) => void] {
+    return [init, (v) => {}];
+  }
+  const STEPS: ({ title: string } | undefined)[] = [
+    { title: 'Step 1' },
+    { title: 'Step 2' },
+  ];
+  function Component() {
+    const [step, setStep] = useState(0);
+    const current = STEPS[step]!;
+    const handleNext = () => {
+      if (step < STEPS.length - 1) {
+        setStep(step + 1);
+      }
+    };
+    return null;
+  }
+      `.trim();
+      const findings = runRuleOnCode(nonNullAssertionRiskRule, code);
+      assert.equal(findings.length, 1);
+    });
+
+    test("flags React state indexing when setter is called with misleading condition like target.length === 0", () => {
+      const code = `
+  import { useState } from 'react';
+  const STEPS: ({ title: string } | undefined)[] = [
+    { title: 'Step 1' },
+    { title: 'Step 2' },
+  ];
+  function Component() {
+    const [step, setStep] = useState(0);
+    const current = STEPS[step]!;
+    const jump = (target: string) => {
+      if (target.length === 0) {
+        setStep(target as any);
+      }
+    };
+    return null;
   }
       `.trim();
       const findings = runRuleOnCode(nonNullAssertionRiskRule, code);

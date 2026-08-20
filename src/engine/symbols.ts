@@ -327,6 +327,24 @@ function isReactSymbol(symbol: tsType.Symbol): boolean {
 
   return declarations.some((decl) => {
     const fileName = decl.getSourceFile().fileName.replace(/\\/g, "/");
-    return fileName.includes("react/index.d.ts") || fileName.includes("@types/react/") || fileName.includes("react.d.ts");
+    if (fileName.includes("react/index.d.ts") || fileName.includes("@types/react/") || fileName.includes("react.d.ts")) {
+      return true;
+    }
+
+    let current: tsType.Node | undefined = decl;
+    while (current) {
+      if (
+        "moduleSpecifier" in current &&
+        current.moduleSpecifier &&
+        typeof current.moduleSpecifier === "object" &&
+        "text" in current.moduleSpecifier &&
+        (current.moduleSpecifier.text === "react" || current.moduleSpecifier.text === "react-dom")
+      ) {
+        return true;
+      }
+      current = current.parent;
+    }
+
+    return false;
   });
 }

@@ -559,4 +559,188 @@ function DeleteButton({ id }: { id: string }) {
     assert.equal(findings.length, 1);
     assert.equal(findings[0]?.ruleId, "async/floating-promise");
   });
+
+  test("flags variable assignment when first-level alias is overwritten with null before return", () => {
+    const code = `
+declare function loadData(): Promise<string>;
+function testFlow() {
+  let p: Promise<string> | null = loadData();
+  let q: Promise<string> | null = p;
+  q = null;
+  return q;
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+  });
+
+  test("flags variable assignment when second-level alias is overwritten with null before return", () => {
+    const code = `
+declare function loadData(): Promise<string>;
+function testFlow() {
+  let p: Promise<string> | null = loadData();
+  let q: Promise<string> | null = p;
+  let r: Promise<string> | null = q;
+  r = null;
+  return r;
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+  });
+
+  test("does not flag variable assignment when surviving sibling alias is returned", () => {
+    const code = `
+declare function loadData(): Promise<string>;
+function testFlow() {
+  let p: Promise<string> | null = loadData();
+  let q: Promise<string> | null = p;
+  let r: Promise<string> | null = q;
+  q = null;
+  return r;
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 0);
+  });
+
+  test("flags variable assignment when alias is reassigned to another Promise", () => {
+    const code = `
+declare function loadData(): Promise<string>;
+declare function otherPromise(): Promise<string>;
+function testFlow() {
+  let p = loadData();
+  let q = p;
+  q = otherPromise();
+  return q;
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+  });
+
+  test("flags variable assignment when alias is conditionally reassigned to null", () => {
+    const code = `
+declare function loadData(): Promise<string>;
+function testFlow(c: boolean) {
+  let p: Promise<string> | null = loadData();
+  let q: Promise<string> | null = p;
+  if (c) {
+    q = null;
+  }
+  return q;
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+  });
+
+  test("flags floating call when async function preamble performs JSON.parse before try", () => {
+    const code = `
+declare function work(): Promise<void>;
+async function processPayload(jsonStr: string) {
+  const data = JSON.parse(jsonStr);
+  try {
+    await work();
+  } catch (err) {
+    console.error(err);
+  }
+}
+function run(raw: string) {
+  processPayload(raw);
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.severity, "error");
+    assert.equal(findings[0]?.confidence, "high");
+  });
+
+  test("flags floating call when async function preamble performs unknown call before try", () => {
+    const code = `
+declare function doUnknownWork(): void;
+declare function work(): Promise<void>;
+async function execute() {
+  doUnknownWork();
+  try {
+    await work();
+  } catch (err) {
+    console.error(err);
+  }
+}
+function run() {
+  execute();
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.severity, "error");
+    assert.equal(findings[0]?.confidence, "high");
+  });
+
+  test("does not flag floating call as error when async function preamble only contains safe primitive/local assignments", () => {
+    const code = `
+declare function work(): Promise<void>;
+async function execute() {
+  const a = 1;
+  const b = "ok";
+  try {
+    await work();
+  } catch (err) {
+    console.error(err);
+  }
+}
+function run() {
+  execute();
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.severity, "warning");
+    assert.equal(findings[0]?.confidence, "medium");
+  });
+
+  test("does not flag floating call as error when async function preamble only contains safe logging and timer cleanup", () => {
+    const code = `
+declare function work(): Promise<void>;
+async function execute(timerId: number) {
+  console.log("starting");
+  clearTimeout(timerId);
+  try {
+    await work();
+  } catch (err) {
+    console.error(err);
+  }
+}
+function run(t: number) {
+  execute(t);
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.severity, "warning");
+    assert.equal(findings[0]?.confidence, "medium");
+  });
+
+  test("flags floating call when async function executes unknown call after try/catch block", () => {
+    const code = `
+declare function work(): Promise<void>;
+declare function postSyncWork(): void;
+async function execute() {
+  try {
+    await work();
+  } catch (err) {
+    console.error(err);
+  }
+  postSyncWork();
+}
+function run() {
+  execute();
+}
+    `.trim();
+    const findings = runRuleOnCode(floatingPromiseRule, code);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]?.severity, "error");
+    assert.equal(findings[0]?.confidence, "high");
+  });
 });

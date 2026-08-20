@@ -350,8 +350,12 @@ export const floatingPromiseRule: Rule = {
         const init = node.initializer;
         const unwrappedInit = unwrapExpression(init, ts);
 
-        // Fast path for explicit await or void
-        if (ts.isAwaitExpression(unwrappedInit) || ts.isVoidExpression(unwrappedInit)) {
+        // Fast path for explicit await, void, or identifier alias
+        if (
+          ts.isAwaitExpression(unwrappedInit) ||
+          ts.isVoidExpression(unwrappedInit) ||
+          ts.isIdentifier(unwrappedInit)
+        ) {
           return;
         }
 

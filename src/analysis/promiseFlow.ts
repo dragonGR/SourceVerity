@@ -166,11 +166,32 @@ export function isVariableTargetReturnedInScope(
   // Set of valid return target names (includes targetName and any alias variables)
   const validReturnNames = new Set<string>([targetName]);
 
+  function scanAssignmentsInNode(n: tsType.Node) {
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const assignedLeft = unwrapExpression(n.left, ts);
+      const assignedName = ts.isIdentifier(assignedLeft)
+        ? assignedLeft.text
+        : ts.isPropertyAccessExpression(assignedLeft)
+          ? assignedLeft.getText()
+          : undefined;
+
+      if (assignedName) {
+        const rhs = unwrapExpression(n.right, ts);
+        if (ts.isIdentifier(rhs) && validReturnNames.has(rhs.text)) {
+          validReturnNames.add(assignedName);
+        } else if (validReturnNames.has(assignedName)) {
+          validReturnNames.delete(assignedName);
+        }
+      }
+    }
+    n.forEachChild(scanAssignmentsInNode);
+  }
+
   for (let i = startIndex + 1; i < statements.length; i++) {
     const currentStmt = statements[i];
     if (!currentStmt) continue;
 
-    // Check if targetName is overwritten before return
+    // Check assignments
     if (ts.isExpressionStatement(currentStmt)) {
       const expr = unwrapExpression(currentStmt.expression, ts);
       if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
@@ -181,23 +202,46 @@ export function isVariableTargetReturnedInScope(
             ? assignedLeft.getText()
             : undefined;
 
-        if (assignedName === targetName) {
-          // targetName was overwritten with another value before reaching return!
-          return false;
+        if (assignedName) {
+          const rhs = unwrapExpression(expr.right, ts);
+          if (ts.isIdentifier(rhs) && validReturnNames.has(rhs.text)) {
+            validReturnNames.add(assignedName);
+          } else if (validReturnNames.has(assignedName)) {
+            validReturnNames.delete(assignedName);
+          }
         }
       }
     }
 
-    // Check for alias: const alias = targetName;
+    // Check for alias declarations: const alias = targetName;
     if (ts.isVariableStatement(currentStmt)) {
       for (const decl of currentStmt.declarationList.declarations) {
-        if (ts.isIdentifier(decl.name) && decl.initializer) {
-          const init = unwrapExpression(decl.initializer, ts);
-          if (ts.isIdentifier(init) && validReturnNames.has(init.text)) {
-            validReturnNames.add(decl.name.text);
+        if (ts.isIdentifier(decl.name)) {
+          const declName = decl.name.text;
+          if (decl.initializer) {
+            const init = unwrapExpression(decl.initializer, ts);
+            if (ts.isIdentifier(init) && validReturnNames.has(init.text)) {
+              validReturnNames.add(declName);
+            } else if (validReturnNames.has(declName)) {
+              validReturnNames.delete(declName);
+            }
           }
         }
       }
+    }
+
+    // Conditional structures that reassign aliases invalidate those aliases conservatively
+    if (
+      ts.isIfStatement(currentStmt) ||
+      ts.isSwitchStatement(currentStmt) ||
+      ts.isTryStatement(currentStmt) ||
+      ts.isForStatement(currentStmt) ||
+      ts.isForOfStatement(currentStmt) ||
+      ts.isForInStatement(currentStmt) ||
+      ts.isWhileStatement(currentStmt) ||
+      ts.isDoStatement(currentStmt)
+    ) {
+      currentStmt.forEachChild(scanAssignmentsInNode);
     }
 
     // Check for return statement
@@ -243,10 +287,44 @@ export function isVariableTargetReturnedInScope(
                 ? assignedLeft.getText()
                 : undefined;
 
-            if (assignedName === targetName) {
-              return false;
+            if (assignedName) {
+              const rhs = unwrapExpression(expr.right, ts);
+              if (ts.isIdentifier(rhs) && validReturnNames.has(rhs.text)) {
+                validReturnNames.add(assignedName);
+              } else if (validReturnNames.has(assignedName)) {
+                validReturnNames.delete(assignedName);
+              }
             }
           }
+        }
+
+        if (ts.isVariableStatement(outerS)) {
+          for (const decl of outerS.declarationList.declarations) {
+            if (ts.isIdentifier(decl.name)) {
+              const declName = decl.name.text;
+              if (decl.initializer) {
+                const init = unwrapExpression(decl.initializer, ts);
+                if (ts.isIdentifier(init) && validReturnNames.has(init.text)) {
+                  validReturnNames.add(declName);
+                } else if (validReturnNames.has(declName)) {
+                  validReturnNames.delete(declName);
+                }
+              }
+            }
+          }
+        }
+
+        if (
+          ts.isIfStatement(outerS) ||
+          ts.isSwitchStatement(outerS) ||
+          ts.isTryStatement(outerS) ||
+          ts.isForStatement(outerS) ||
+          ts.isForOfStatement(outerS) ||
+          ts.isForInStatement(outerS) ||
+          ts.isWhileStatement(outerS) ||
+          ts.isDoStatement(outerS)
+        ) {
+          outerS.forEachChild(scanAssignmentsInNode);
         }
 
         if (ts.isReturnStatement(outerS) && outerS.expression) {
